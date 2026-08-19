@@ -3,10 +3,13 @@
 Versionado SemVer (git tags) + build Docker + publicación en GHCR, automatizado por
 `.github/workflows/docker-publish.yml` y `.github/scripts/compute-version.sh` (raíz del repo).
 
+Repo: `ESCORIAL-SAIC/expedicion-api` (extraído del monorepo original de la app Delphi/Android,
+que sigue viviendo en `ESCORIAL-RS/Expedicion` sin este código).
+
 ## Setup único (hacerlo una sola vez)
 
 1. Crear los labels de release en el repo (requiere `gh` autenticado con permisos sobre
-   `ESCORIAL-RS/Expedicion`):
+   `ESCORIAL-SAIC/expedicion-api`):
 
    ```bash
    gh label create release:minor -c 0e8a16 -d "Sube MINOR al mergear"
@@ -33,8 +36,7 @@ Versionado SemVer (git tags) + build Docker + publicación en GHCR, automatizado
 
 ## Cómo se dispara el build
 
-- Push a `main` o `dev` que toque `api/**` (o el workflow/script de versión) → build +
-  push a `ghcr.io/escorial-rs/expedicion-api`.
+- Push a `main` o `dev` → build + push a `ghcr.io/escorial-saic/expedicion-api`.
   - `main` → release final `vX.Y.Z` (tags `:X.Y.Z`, `:X.Y`, `:latest`, `:sha-XXXXXXX`).
   - `dev` → pre-release `vX.Y.Z-rc.N` (tags `:X.Y.Z-rc.N`, `:dev`, `:sha-XXXXXXX`).
 - Tag manual `vX.Y.Z` pusheado a mano → build usando ese tag tal cual.
@@ -43,7 +45,6 @@ Versionado SemVer (git tags) + build Docker + publicación en GHCR, automatizado
 ## Deploy en el servidor
 
 ```bash
-cd api
 cp .env.example .env   # completar credenciales reales de Postgres/SQL Server (no versionar)
 IMAGE_TAG=1.2.3 docker compose up -d   # o sin IMAGE_TAG para :latest
 ```

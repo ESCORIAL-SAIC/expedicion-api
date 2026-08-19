@@ -1,6 +1,6 @@
 services:
   api:
-    image: ghcr.io/escorial-rs/expedicion-api:${IMAGE_TAG:-latest}
+    image: ghcr.io/escorial-saic/expedicion-api:${IMAGE_TAG:-latest}
     restart: unless-stopped
     ports:
       - '3000:3000'
