@@ -1,5 +1,8 @@
+name: expedicion-api
+
 services:
-  api:
+  expedicion-api:
+    container_name: expedicion-api
     image: ghcr.io/escorial-saic/expedicion-api:${IMAGE_TAG:-latest}
     restart: unless-stopped
     ports:

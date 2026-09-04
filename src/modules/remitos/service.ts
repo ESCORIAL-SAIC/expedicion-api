@@ -24,7 +24,7 @@ export async function listarRemitosDespacho(
 ): Promise<{ exactMatch: RemitoListItem | null; items: RemitoListItem[] }> {
   const rows = await queryPg<RemitoDespachoRow>(
     `SELECT REMITO_N, CLIENTE_N, REMITO_ID, CLIENTE_ID, TIPO, CONSIGNACION
-     FROM public.vp_itemremito
+     FROM public.ve_items_remito_despacho
      WHERE PERMITE_DESPACHO = true
      GROUP BY REMITO_N, CLIENTE_N, REMITO_ID, CLIENTE_ID, TIPO, CONSIGNACION
      ORDER BY REMITO_N`,
@@ -49,7 +49,7 @@ export async function listarRemitosDevolucion(
 ): Promise<{ exactMatch: RemitoListItem | null; items: RemitoListItem[] }> {
   const rows = await queryPg<RemitoDevolucionRow>(
     `SELECT REMITO_N, CLIENTE_N, REMITO_ID, CLIENTE_ID, TIPO
-     FROM public.vp_itemremito
+     FROM public.ve_items_remito_devolucion
      WHERE PERMITE_DESPACHO = false
      GROUP BY REMITO_N, CLIENTE_N, REMITO_ID, CLIENTE_ID, TIPO
      ORDER BY REMITO_N`,

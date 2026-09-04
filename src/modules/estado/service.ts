@@ -66,7 +66,10 @@ export async function consultarEstadoEtiqueta(input: EstadoInput): Promise<Estad
   }
 
   const row = rows[0];
-  const nuncaDespachada = !row.expedicion_id || row.es_despacho === false;
+  // Replica UnitInfo.pas:89-90: `ES_DESPACHO.AsBoolean` de Delphi trata NULL como False, por eso
+  // se usa `!== true` (no `=== false`) para que un ES_DESPACHO NULL tambien cuente como "nunca
+  // despachada", igual que en el original.
+  const nuncaDespachada = !row.expedicion_id || row.es_despacho !== true;
   if (nuncaDespachada) {
     return { available: true, productoN: row.producto_n };
   }

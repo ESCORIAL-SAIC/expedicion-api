@@ -111,6 +111,30 @@ describe('POST /etiquetas/estado', () => {
     expect(res.body).toEqual({ available: true, productoN: 'Cocina X' });
   });
 
+  // Replica UnitInfo.pas:89-90: ES_DESPACHO.AsBoolean sobre un campo NULL da False en Delphi,
+  // por lo que con EXPEDICION_ID no nulo pero ES_DESPACHO NULL el resultado debe seguir siendo
+  // "disponible" (nunca despachada), no lo opuesto.
+  it('200 available true si expedicion_id existe pero es_despacho es NULL', async () => {
+    queryPgMock.mockImplementation(
+      makePgDispatcher([
+        authRule(),
+        {
+          match: Markers.estadoInfo,
+          handler: () => [
+            { producto_n: 'Cocina X', expedicion_id: 'exp-1', es_despacho: null, cliente_n: null, remito_n: null, fechahora: null },
+          ],
+        },
+      ]),
+    );
+
+    const res = await request(app.server)
+      .post('/etiquetas/estado')
+      .send({ ...credenciales, tipo: 'COCINA', etiqueta });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ available: true, productoN: 'Cocina X' });
+  });
+
   it('200 available false con datos del ultimo despacho si ya fue despachada', async () => {
     queryPgMock.mockImplementation(
       makePgDispatcher([
