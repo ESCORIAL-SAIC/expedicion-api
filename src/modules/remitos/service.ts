@@ -104,7 +104,12 @@ export async function obtenerVistaTransaccion(
          SELECT
            IRV.ID AS ITEMREMITO_ID,
            IRV.REFERENCIATIPO_ID AS PRODUCTO_ID,
-           EAPRD.DESCRIPCIONAPP AS PRODUCTO_N,
+           -- DESCRIPCIONAPP es una descripcion corta cargada a mano en el ERP y esta vacia ('' , no
+           -- NULL) para la enorme mayoria de los productos (al 2026-09: 3484 de 3550), entre ellos
+           -- los importados y Peabody, que aparecian sin descripcion en el listado. Se cae a
+           -- V_PRODUCTO.DESCRIPCION, que siempre tiene dato aunque sea mas larga (incluye medidas y
+           -- codigo interno).
+           COALESCE(NULLIF(EAPRD.DESCRIPCIONAPP, ''), PRD.DESCRIPCION) AS PRODUCTO_N,
            COUNT(EXP.*) AS CANTIDAD,
            CAST(IRV.CANTIDAD2_CANTIDAD AS INTEGER) AS CANTIDAD_ORIGINAL
          FROM public.V_ITEMEGRESOINVENTARIO IRV
@@ -112,7 +117,8 @@ export async function obtenerVistaTransaccion(
          INNER JOIN public.V_UD_PRODUCTO EAPRD ON PRD.BOEXTENSION_ID = EAPRD.ID
          LEFT JOIN public.AUX_EXPEDICION EXP   ON (IRV.ID = EXP.ITEMREMITO_ID) AND (EXP.ES_DESPACHO = $1)
          WHERE IRV.PLACEOWNER_ID = $2
-         GROUP BY IRV.PLACEOWNER_ID, IRV.ID, IRV.REFERENCIATIPO_ID, EAPRD.DESCRIPCIONAPP, IRV.CANTIDAD2_CANTIDAD
+         GROUP BY IRV.PLACEOWNER_ID, IRV.ID, IRV.REFERENCIATIPO_ID,
+                  COALESCE(NULLIF(EAPRD.DESCRIPCIONAPP, ''), PRD.DESCRIPCION), IRV.CANTIDAD2_CANTIDAD
        ) Q
      ) Q1
      ORDER BY CASE WHEN Q1.ITEMREMITO_ID IS NULL THEN 0 ELSE 1 END DESC, Q1.PRODUCTO_N, Q1.CANTIDAD_RESTANTE DESC`,
