@@ -154,3 +154,37 @@ export async function obtenerProductosRemito(remitoId: string): Promise<Producto
 export function calcularTotalEscaneado(items: VistaTransaccionItem[]): number {
   return items.reduce((total, item) => total + item.cantidad, 0);
 }
+
+/**
+ * Listado de remitos de un circuito nuevo (IMPORT / PEABODY), filtrado por TIPO.
+ *
+ * Usa ve_items_remito_despacho y no vp_itemremito: son las vistas propias de expedicion,
+ * que traen los remitos de estos productos. listarRemitosDespacho/listarRemitosDevolucion
+ * siguen leyendo vp_itemremito, igual que el Delphi, y no se ven afectadas.
+ */
+export async function listarRemitosPorTipo(
+  tipo: string,
+  remitoN: string,
+): Promise<{ exactMatch: RemitoListItem | null; items: RemitoListItem[] }> {
+  const rows = await queryPg<RemitoDespachoRow>(
+    `SELECT REMITO_N, CLIENTE_N, REMITO_ID, CLIENTE_ID, TIPO, CONSIGNACION
+     FROM public.ve_items_remito_despacho
+     WHERE PERMITE_DESPACHO = true
+     AND   TIPO = $1
+     GROUP BY REMITO_N, CLIENTE_N, REMITO_ID, CLIENTE_ID, TIPO, CONSIGNACION
+     ORDER BY REMITO_N`,
+    [tipo],
+  );
+
+  const items: RemitoListItem[] = rows.map((r) => ({
+    remitoN: r.remito_n,
+    clienteN: r.cliente_n,
+    remitoId: r.remito_id,
+    clienteId: r.cliente_id,
+    tipo: r.tipo,
+    consignacion: r.consignacion,
+  }));
+
+  const exactMatch = items.find((i) => i.remitoN === remitoN) ?? null;
+  return { exactMatch, items };
+}
