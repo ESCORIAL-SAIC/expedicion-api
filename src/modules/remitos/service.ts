@@ -24,7 +24,7 @@ export async function listarRemitosDespacho(
 ): Promise<{ exactMatch: RemitoListItem | null; items: RemitoListItem[] }> {
   const rows = await queryPg<RemitoDespachoRow>(
     `SELECT REMITO_N, CLIENTE_N, REMITO_ID, CLIENTE_ID, TIPO, CONSIGNACION
-     FROM public.ve_items_remito_despacho
+     FROM public.vp_itemremito
      WHERE PERMITE_DESPACHO = true
      GROUP BY REMITO_N, CLIENTE_N, REMITO_ID, CLIENTE_ID, TIPO, CONSIGNACION
      ORDER BY REMITO_N`,
@@ -49,7 +49,7 @@ export async function listarRemitosDevolucion(
 ): Promise<{ exactMatch: RemitoListItem | null; items: RemitoListItem[] }> {
   const rows = await queryPg<RemitoDevolucionRow>(
     `SELECT REMITO_N, CLIENTE_N, REMITO_ID, CLIENTE_ID, TIPO
-     FROM public.ve_items_remito_devolucion
+     FROM public.vp_itemremito
      WHERE PERMITE_DESPACHO = false
      GROUP BY REMITO_N, CLIENTE_N, REMITO_ID, CLIENTE_ID, TIPO
      ORDER BY REMITO_N`,
@@ -104,7 +104,12 @@ export async function obtenerVistaTransaccion(
          SELECT
            IRV.ID AS ITEMREMITO_ID,
            IRV.REFERENCIATIPO_ID AS PRODUCTO_ID,
-           EAPRD.DESCRIPCIONAPP AS PRODUCTO_N,
+           -- DESCRIPCIONAPP es una descripcion corta cargada a mano en el ERP y esta vacia ('' , no
+           -- NULL) para la enorme mayoria de los productos (al 2026-09: 3484 de 3550), entre ellos
+           -- los importados y Peabody, que aparecian sin descripcion en el listado. Se cae a
+           -- V_PRODUCTO.DESCRIPCION, que siempre tiene dato aunque sea mas larga (incluye medidas y
+           -- codigo interno).
+           COALESCE(NULLIF(EAPRD.DESCRIPCIONAPP, ''), PRD.DESCRIPCION) AS PRODUCTO_N,
            COUNT(EXP.*) AS CANTIDAD,
            CAST(IRV.CANTIDAD2_CANTIDAD AS INTEGER) AS CANTIDAD_ORIGINAL
          FROM public.V_ITEMEGRESOINVENTARIO IRV
@@ -112,7 +117,8 @@ export async function obtenerVistaTransaccion(
          INNER JOIN public.V_UD_PRODUCTO EAPRD ON PRD.BOEXTENSION_ID = EAPRD.ID
          LEFT JOIN public.AUX_EXPEDICION EXP   ON (IRV.ID = EXP.ITEMREMITO_ID) AND (EXP.ES_DESPACHO = $1)
          WHERE IRV.PLACEOWNER_ID = $2
-         GROUP BY IRV.PLACEOWNER_ID, IRV.ID, IRV.REFERENCIATIPO_ID, EAPRD.DESCRIPCIONAPP, IRV.CANTIDAD2_CANTIDAD
+         GROUP BY IRV.PLACEOWNER_ID, IRV.ID, IRV.REFERENCIATIPO_ID,
+                  COALESCE(NULLIF(EAPRD.DESCRIPCIONAPP, ''), PRD.DESCRIPCION), IRV.CANTIDAD2_CANTIDAD
        ) Q
      ) Q1
      ORDER BY CASE WHEN Q1.ITEMREMITO_ID IS NULL THEN 0 ELSE 1 END DESC, Q1.PRODUCTO_N, Q1.CANTIDAD_RESTANTE DESC`,
@@ -147,4 +153,38 @@ export async function obtenerProductosRemito(remitoId: string): Promise<Producto
 
 export function calcularTotalEscaneado(items: VistaTransaccionItem[]): number {
   return items.reduce((total, item) => total + item.cantidad, 0);
+}
+
+/**
+ * Listado de remitos de un circuito nuevo (IMPORT / PEABODY), filtrado por TIPO.
+ *
+ * Usa ve_items_remito_despacho y no vp_itemremito: son las vistas propias de expedicion,
+ * que traen los remitos de estos productos. listarRemitosDespacho/listarRemitosDevolucion
+ * siguen leyendo vp_itemremito, igual que el Delphi, y no se ven afectadas.
+ */
+export async function listarRemitosPorTipo(
+  tipo: string,
+  remitoN: string,
+): Promise<{ exactMatch: RemitoListItem | null; items: RemitoListItem[] }> {
+  const rows = await queryPg<RemitoDespachoRow>(
+    `SELECT REMITO_N, CLIENTE_N, REMITO_ID, CLIENTE_ID, TIPO, CONSIGNACION
+     FROM public.ve_items_remito_despacho
+     WHERE PERMITE_DESPACHO = true
+     AND   TIPO = $1
+     GROUP BY REMITO_N, CLIENTE_N, REMITO_ID, CLIENTE_ID, TIPO, CONSIGNACION
+     ORDER BY REMITO_N`,
+    [tipo],
+  );
+
+  const items: RemitoListItem[] = rows.map((r) => ({
+    remitoN: r.remito_n,
+    clienteN: r.cliente_n,
+    remitoId: r.remito_id,
+    clienteId: r.cliente_id,
+    tipo: r.tipo,
+    consignacion: r.consignacion,
+  }));
+
+  const exactMatch = items.find((i) => i.remitoN === remitoN) ?? null;
+  return { exactMatch, items };
 }

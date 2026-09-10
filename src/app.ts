@@ -5,6 +5,7 @@ import { authRoutes } from './http/routes/auth.js';
 import { remitosRoutes } from './http/routes/remitos.js';
 import { escaneoRoutes } from './http/routes/escaneo.js';
 import { estadoRoutes } from './http/routes/estado.js';
+import { circuitosRoutes } from './http/routes/circuitos.js';
 import { checkPgHealth } from './db/postgres.js';
 import { checkMssqlHealth } from './db/mssql.js';
 
@@ -41,6 +42,7 @@ export function buildApp(): FastifyInstance {
   app.register(remitosRoutes);
   app.register(escaneoRoutes);
   app.register(estadoRoutes);
+  app.register(circuitosRoutes);
 
   return app;
 }

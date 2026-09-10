@@ -363,12 +363,11 @@ describe('POST /despacho/:remitoId/escaneo', () => {
     );
   });
 
-  // BUG (hallazgo QA): el Delphi original (UnitFunciones.pas linea 694) usa DOS espacios entre
-  // "Reintente nuevamente." y el mensaje tecnico. La spec exige fidelidad byte a byte salvo el
-  // unico punto documentado (typo "Exiten"->"Existen" en QUANTITY_MISMATCH). messages.ts (linea 40)
-  // usa un solo espacio. Este test documenta el mensaje esperado segun el Delphi legado; falla
-  // hoy porque src/errors/messages.ts no replica el doble espacio.
-  it('[hallazgo QA] SCAN_ERROR deberia llevar doble espacio antes del mensaje tecnico (fidelidad byte a byte con UnitFunciones.pas:694)', async () => {
+  // El Delphi original (UnitFunciones.pas:694) usa DOS espacios entre "Reintente nuevamente." y el
+  // mensaje tecnico, y la spec exige fidelidad byte a byte salvo el unico punto documentado (typo
+  // "Exiten"->"Existen" en QUANTITY_MISMATCH). messages.ts:40 ya replica el doble espacio; este
+  // test lo fija para que no se "normalice" a un espacio en una edicion futura.
+  it('SCAN_ERROR lleva doble espacio antes del mensaje tecnico (fidelidad byte a byte con UnitFunciones.pas:694)', async () => {
     queryPgMock.mockImplementation(
       makePgDispatcher([
         authRule(),

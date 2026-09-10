@@ -208,6 +208,29 @@ describe('GET /remitos/:remitoId/detalle', () => {
     expect(res.body.productosValidos).toEqual([{ itemRemitoId: 'item-1', productoId: 'prod-1' }]);
   });
 
+  it('la vista de transaccion cae a V_PRODUCTO.DESCRIPCION cuando DESCRIPCIONAPP esta vacia', async () => {
+    // DESCRIPCIONAPP se carga a mano en el ERP y esta vacia ('') para casi todos los productos
+    // (importados y Peabody incluidos), que por eso aparecian sin descripcion en el listado. El
+    // fallback vive en el SQL, asi que lo que se puede verificar aca es que la query lo lleve.
+    queryPgMock.mockImplementation(
+      makePgDispatcher([authRule(), { match: Markers.vistaTransaccion, handler: () => [] }]),
+    );
+
+    await request(app.server)
+      .get('/remitos/remito-1/detalle')
+      .set('Authorization', basicAuthHeader('jperez', '1234'))
+      .query({ esDespacho: 'false' });
+
+    const sqlVistaTransaccion = queryPgMock.mock.calls
+      .map(([sql]) => sql as string)
+      .find((sql) => Markers.vistaTransaccion(sql));
+
+    const fallback = "COALESCE(NULLIF(EAPRD.DESCRIPCIONAPP, ''), PRD.DESCRIPCION)";
+    expect(sqlVistaTransaccion).toContain(fallback);
+    // El GROUP BY tiene que agrupar por la MISMA expresion, o Postgres rechaza la query.
+    expect(sqlVistaTransaccion!.split(fallback).length - 1).toBe(2);
+  });
+
   it('esDespacho=false NO incluye productosValidos', async () => {
     queryPgMock.mockImplementation(
       makePgDispatcher([authRule(), { match: Markers.vistaTransaccion, handler: () => [] }]),

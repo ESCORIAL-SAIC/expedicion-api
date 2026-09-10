@@ -7,8 +7,9 @@ API Node.js/TypeScript que reemplaza la logica de datos embebida en la app Delph
 ## Requisitos
 
 - Node.js 20.x o superior.
-- Acceso de red a Postgres ESCORIAL (10.90.98.7:5432) y SQL Server Etiquetas Suipacha
-  (192.168.10.103:1433), o una base de test equivalente.
+- Acceso de red a Postgres ESCORIAL (puerto 5432) y SQL Server Etiquetas Suipacha
+  (puerto 1433), o una base de test equivalente. Los hosts van en el `.env` (ver
+  `.env.example`), no en el repo.
 
 ## Instalar
 
