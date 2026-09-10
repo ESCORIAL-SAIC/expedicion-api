@@ -47,6 +47,11 @@ export const Markers = {
   //    rompe el ruteo.
   remitosCircuitoList: (sql: string) => sql.includes('ve_items_remito_despacho'),
   etiquetasMaestroImportados: (sql: string) => sql.includes('vp_etiquetas_con_importados'),
+
+  // Avance por remito (para marcar los completos en el listado). CANTIDAD_PEDIDA es exclusivo de
+  // esta query, asi que no colisiona con productosRemito ni vistaTransaccion, que tambien leen
+  // V_ITEMEGRESOINVENTARIO.
+  avanceRemitos: (sql: string) => sql.includes('CANTIDAD_PEDIDA'),
 };
 
 export const EMPLEADO_VALIDO = { usuario: 'JPEREZ', password: '1234' };

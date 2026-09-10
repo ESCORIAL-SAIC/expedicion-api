@@ -22,6 +22,18 @@ vi.mock('../../src/db/mssql.js', () => ({
 
 const { buildApp } = await import('../../src/app.js');
 
+// El listado pide ademas el avance por remito, para marcar los completos. Por defecto se
+// devuelve remito-1 completo (2 de 2) y remito-2 a medias (1 de 3).
+function avanceRule() {
+  return {
+    match: Markers.avanceRemitos,
+    handler: () => [
+      { remito_id: 'remito-1', cantidad_escaneada: 2, cantidad_pedida: 2 },
+      { remito_id: 'remito-2', cantidad_escaneada: 1, cantidad_pedida: 3 },
+    ],
+  };
+}
+
 function authRule() {
   return { match: Markers.auth, handler: () => [{ usuario: 'JPEREZ', password: '1234' }] };
 }
@@ -63,7 +75,7 @@ describe('GET /remitos/despacho', () => {
 
   it('401 INVALID_CREDENTIALS sin header ni body de autenticacion', async () => {
     queryPgMock.mockImplementation(
-      makePgDispatcher([{ match: Markers.auth, handler: () => [] }, { match: Markers.remitosDespachoList, handler: () => remitoRows }]),
+      makePgDispatcher([{ match: Markers.auth, handler: () => [] }, { match: Markers.remitosDespachoList, handler: () => remitoRows }, avanceRule()]),
     );
 
     const res = await request(app.server).get('/remitos/despacho').query({ remitoN: 'R-0001' });
@@ -77,7 +89,7 @@ describe('GET /remitos/despacho', () => {
 
   it('autentica via header Authorization: Basic (GET no tiene body) y devuelve exactMatch + items', async () => {
     queryPgMock.mockImplementation(
-      makePgDispatcher([authRule(), { match: Markers.remitosDespachoList, handler: () => remitoRows }]),
+      makePgDispatcher([authRule(), { match: Markers.remitosDespachoList, handler: () => remitoRows }, avanceRule()]),
     );
 
     const res = await request(app.server)
@@ -93,13 +105,15 @@ describe('GET /remitos/despacho', () => {
       clienteId: 'cliente-1',
       tipo: 'COCINA',
       consignacion: false,
+      cantidadEscaneada: 2,
+      cantidadPedida: 2,
     });
     expect(res.body.items).toHaveLength(2);
   });
 
   it('exactMatch null si el remitoN buscado no matchea ningun item de la lista', async () => {
     queryPgMock.mockImplementation(
-      makePgDispatcher([authRule(), { match: Markers.remitosDespachoList, handler: () => remitoRows }]),
+      makePgDispatcher([authRule(), { match: Markers.remitosDespachoList, handler: () => remitoRows }, avanceRule()]),
     );
 
     const res = await request(app.server)
@@ -112,9 +126,47 @@ describe('GET /remitos/despacho', () => {
     expect(res.body.items).toHaveLength(2);
   });
 
+  // El avance es lo que permite marcar los completos en el listado: la vista de remitos solo
+  // filtra por PERMITE_DESPACHO, que lo maneja el ERP y no baja al terminar de cargar un remito.
+  it('cada remito trae su avance (escaneado vs pedido)', async () => {
+    queryPgMock.mockImplementation(
+      makePgDispatcher([authRule(), { match: Markers.remitosDespachoList, handler: () => remitoRows }, avanceRule()]),
+    );
+
+    const res = await request(app.server)
+      .get('/remitos/despacho')
+      .set('Authorization', basicAuthHeader('jperez', '1234'));
+
+    expect(res.status).toBe(200);
+    const [uno, dos] = res.body.items;
+    // remito-1 completo, remito-2 a medias.
+    expect(uno.cantidadEscaneada).toBe(2);
+    expect(uno.cantidadPedida).toBe(2);
+    expect(dos.cantidadEscaneada).toBe(1);
+    expect(dos.cantidadPedida).toBe(3);
+  });
+
+  it('un remito sin avance registrado cae a 0/0 y no rompe', async () => {
+    queryPgMock.mockImplementation(
+      makePgDispatcher([
+        authRule(),
+        { match: Markers.remitosDespachoList, handler: () => remitoRows },
+        { match: Markers.avanceRemitos, handler: () => [] },
+      ]),
+    );
+
+    const res = await request(app.server)
+      .get('/remitos/despacho')
+      .set('Authorization', basicAuthHeader('jperez', '1234'));
+
+    expect(res.status).toBe(200);
+    expect(res.body.items[0].cantidadEscaneada).toBe(0);
+    expect(res.body.items[0].cantidadPedida).toBe(0);
+  });
+
   it('remitoN ausente en la query no rompe: exactMatch null, items completos', async () => {
     queryPgMock.mockImplementation(
-      makePgDispatcher([authRule(), { match: Markers.remitosDespachoList, handler: () => remitoRows }]),
+      makePgDispatcher([authRule(), { match: Markers.remitosDespachoList, handler: () => remitoRows }, avanceRule()]),
     );
 
     const res = await request(app.server)
@@ -144,7 +196,7 @@ describe('GET /remitos/devolucion', () => {
       { remito_n: 'R-0003', cliente_n: 'Cliente Tres', remito_id: 'remito-3', cliente_id: 'cliente-3', tipo: 'COCINA' },
     ];
     queryPgMock.mockImplementation(
-      makePgDispatcher([authRule(), { match: Markers.remitosDevolucionList, handler: () => devolucionRows }]),
+      makePgDispatcher([authRule(), { match: Markers.remitosDevolucionList, handler: () => devolucionRows }, avanceRule()]),
     );
 
     const res = await request(app.server)
@@ -159,6 +211,9 @@ describe('GET /remitos/devolucion', () => {
       remitoId: 'remito-3',
       clienteId: 'cliente-3',
       tipo: 'COCINA',
+      // Sin avance registrado para remito-3: cae a 0/0.
+      cantidadEscaneada: 0,
+      cantidadPedida: 0,
     });
     expect(res.body.exactMatch.consignacion).toBeUndefined();
   });

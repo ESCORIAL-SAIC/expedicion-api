@@ -18,6 +18,55 @@ interface RemitoDevolucionRow {
   tipo: string;
 }
 
+interface AvanceRow {
+  remito_id: string;
+  cantidad_escaneada: string | number;
+  cantidad_pedida: string | number;
+}
+
+/**
+ * Avance de todos los remitos en una sola query -- no una por remito -- indexado por remito_id.
+ *
+ * La granularidad es el REMITO COMPLETO, no el tipo. Seria mas fino mostrarlo por tipo (un remito
+ * mixto son dos pedazos que se despachan por separado), pero no se puede con las vistas que hay:
+ * el TIPO vive en vp_itemremito, que no expone producto_id, y V_ITEMEGRESOINVENTARIO tiene el
+ * producto pero no el tipo. Sin una columna que los cruce no hay forma de repartir el avance.
+ *
+ * Por eso el numero se muestra UNA vez por remito, en la cabecera del grupo, y no repetido en cada
+ * fila de tipo: ahi diria lo mismo dos veces y se leeria como el avance de ese tipo, que no es.
+ *
+ * Va aparte del listado y no como JOIN porque ese SELECT ya agrupa por TIPO y meter el staging en
+ * el mismo GROUP BY multiplicaria los conteos.
+ *
+ * El COUNT sale de un subselect correlacionado y no de un LEFT JOIN porque un remito con varios
+ * items del mismo producto duplicaria las filas de staging al cruzarse.
+ */
+async function obtenerAvancePorRemito(esDespacho: boolean): Promise<Map<string, { escaneada: number; pedida: number }>> {
+  const rows = await queryPg<AvanceRow>(
+    `SELECT
+       IRV.PLACEOWNER_ID AS REMITO_ID,
+       COALESCE(SUM(CAST(IRV.CANTIDAD2_CANTIDAD AS INTEGER)), 0) AS CANTIDAD_PEDIDA,
+       COALESCE((
+         SELECT COUNT(*)
+         FROM public.AUX_EXPEDICION EXP
+         WHERE EXP.REMITO_ID = IRV.PLACEOWNER_ID
+         AND   EXP.ES_DESPACHO = $1
+       ), 0) AS CANTIDAD_ESCANEADA
+     FROM public.V_ITEMEGRESOINVENTARIO IRV
+     GROUP BY IRV.PLACEOWNER_ID`,
+    [esDespacho],
+  );
+
+  const avance = new Map<string, { escaneada: number; pedida: number }>();
+  for (const r of rows) {
+    avance.set(r.remito_id, {
+      escaneada: Number(r.cantidad_escaneada),
+      pedida: Number(r.cantidad_pedida),
+    });
+  }
+  return avance;
+}
+
 // Replica QueryRemitoDespacho.
 export async function listarRemitosDespacho(
   remitoN: string,
@@ -30,6 +79,8 @@ export async function listarRemitosDespacho(
      ORDER BY REMITO_N`,
   );
 
+  const avance = await obtenerAvancePorRemito(true);
+
   const items: RemitoListItem[] = rows.map((r) => ({
     remitoN: r.remito_n,
     clienteN: r.cliente_n,
@@ -37,6 +88,8 @@ export async function listarRemitosDespacho(
     clienteId: r.cliente_id,
     tipo: r.tipo,
     consignacion: r.consignacion,
+    cantidadEscaneada: avance.get(r.remito_id)?.escaneada ?? 0,
+    cantidadPedida: avance.get(r.remito_id)?.pedida ?? 0,
   }));
 
   const exactMatch = items.find((i) => i.remitoN === remitoN) ?? null;
@@ -55,12 +108,16 @@ export async function listarRemitosDevolucion(
      ORDER BY REMITO_N`,
   );
 
+  const avance = await obtenerAvancePorRemito(false);
+
   const items: RemitoListItem[] = rows.map((r) => ({
     remitoN: r.remito_n,
     clienteN: r.cliente_n,
     remitoId: r.remito_id,
     clienteId: r.cliente_id,
     tipo: r.tipo,
+    cantidadEscaneada: avance.get(r.remito_id)?.escaneada ?? 0,
+    cantidadPedida: avance.get(r.remito_id)?.pedida ?? 0,
   }));
 
   const exactMatch = items.find((i) => i.remitoN === remitoN) ?? null;
@@ -176,6 +233,8 @@ export async function listarRemitosPorTipo(
     [tipo],
   );
 
+  const avance = await obtenerAvancePorRemito(true);
+
   const items: RemitoListItem[] = rows.map((r) => ({
     remitoN: r.remito_n,
     clienteN: r.cliente_n,
@@ -183,6 +242,8 @@ export async function listarRemitosPorTipo(
     clienteId: r.cliente_id,
     tipo: r.tipo,
     consignacion: r.consignacion,
+    cantidadEscaneada: avance.get(r.remito_id)?.escaneada ?? 0,
+    cantidadPedida: avance.get(r.remito_id)?.pedida ?? 0,
   }));
 
   const exactMatch = items.find((i) => i.remitoN === remitoN) ?? null;

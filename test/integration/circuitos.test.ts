@@ -340,6 +340,14 @@ describe('GET /remitos/:circuito', () => {
 
   // remitosCircuitoList va antes que remitosDespachoList: la query del circuito tambien
   // contiene 'PERMITE_DESPACHO = true' y el dispatcher devuelve la primera que matchea.
+  // El listado tambien consulta el avance por remito, para marcar los completos.
+  function avanceCircuitoRule() {
+    return {
+      match: Markers.avanceRemitos,
+      handler: () => [{ remito_id: remitoId, cantidad_escaneada: 1, cantidad_pedida: 3 }],
+    };
+  }
+
   function listRule(tipo: string) {
     return {
       match: Markers.remitosCircuitoList,
@@ -357,7 +365,7 @@ describe('GET /remitos/:circuito', () => {
   }
 
   it('lista los remitos del tipo del circuito', async () => {
-    queryPgMock.mockImplementation(makePgDispatcher([authRule(), listRule('PEABODY')]));
+    queryPgMock.mockImplementation(makePgDispatcher([authRule(), listRule('PEABODY'), avanceCircuitoRule()]));
 
     const res = await request(app.server)
       .get('/remitos/peabody')
@@ -369,7 +377,7 @@ describe('GET /remitos/:circuito', () => {
   });
 
   it('filtra por TIPO en el SQL y lee la vista de expedicion', async () => {
-    queryPgMock.mockImplementation(makePgDispatcher([authRule(), listRule('IMPORT')]));
+    queryPgMock.mockImplementation(makePgDispatcher([authRule(), listRule('IMPORT'), avanceCircuitoRule()]));
 
     await request(app.server).get('/remitos/importado').set('Authorization', basicAuthHeader());
 
@@ -382,7 +390,7 @@ describe('GET /remitos/:circuito', () => {
   });
 
   it('devuelve exactMatch cuando el remitoN coincide', async () => {
-    queryPgMock.mockImplementation(makePgDispatcher([authRule(), listRule('PEABODY')]));
+    queryPgMock.mockImplementation(makePgDispatcher([authRule(), listRule('PEABODY'), avanceCircuitoRule()]));
 
     const res = await request(app.server)
       .get(`/remitos/peabody?remitoN=${remitoN}`)
