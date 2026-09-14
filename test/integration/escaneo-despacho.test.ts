@@ -78,6 +78,23 @@ describe('POST /despacho/:remitoId/escaneo', () => {
     );
   });
 
+  // En despacho la pregunta es global ("ya salio por algun lado"), a diferencia de devolucion,
+  // que se acota al remito elegido.
+  it('el chequeo de ultimo estado NO se acota al remito', async () => {
+    queryPgMock.mockImplementation(
+      makePgDispatcher([authRule(), { match: Markers.ultimoEstadoEtiqueta, handler: () => [] }]),
+    );
+    queryMssqlMock.mockImplementation(
+      makeMssqlDispatcher([{ match: Markers.etiquetasMaestro, handler: () => [] }]),
+    );
+
+    await request(app.server).post(`/despacho/${remitoId}/escaneo`).send(baseBody());
+
+    const llamada = queryPgMock.mock.calls.find((c) => Markers.ultimoEstadoEtiqueta(String(c[0])));
+    expect(String(llamada?.[0])).not.toContain('remito_id = $2');
+    expect(llamada?.[1]).toEqual([etiqueta]);
+  });
+
   it('404 LABEL_NOT_FOUND si no existe en el maestro de etiquetas', async () => {
     queryPgMock.mockImplementation(
       makePgDispatcher([authRule(), { match: Markers.ultimoEstadoEtiqueta, handler: () => [] }]),

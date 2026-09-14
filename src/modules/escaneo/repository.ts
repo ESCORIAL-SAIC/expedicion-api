@@ -11,14 +11,29 @@ interface UltimoEstadoRow {
 }
 
 // Replica QueryUltimoEstadoEtiqueta: DISTINCT ON (etiqueta), global (sin filtrar remito), mas reciente por fecha.
-export async function obtenerUltimoEstadoEtiqueta(etiqueta: string): Promise<boolean> {
+/**
+ * Ultimo estado de la etiqueta: true si su ultimo movimiento fue un despacho.
+ *
+ * Con `remitoId` mira solo los movimientos de ESE remito, que es lo que hace falta en devolucion:
+ * una etiqueta solo puede devolverse por el remito que la despacho. Sin el filtro, una etiqueta
+ * despachada en el remito A se podria devolver por el B --y peor, el DELETE que viene despues
+ * tampoco distingue remitos-- asi que se borrarian registros de otro remito.
+ *
+ * Sin `remitoId` conserva el comportamiento historico (mira el ultimo movimiento global), que es
+ * lo que corresponde al despacho: ahi la pregunta es "esta etiqueta ya salio por algun lado".
+ */
+export async function obtenerUltimoEstadoEtiqueta(
+  etiqueta: string,
+  remitoId?: string,
+): Promise<boolean> {
   const rows = await queryPg<UltimoEstadoRow>(
     `SELECT DISTINCT ON (etiqueta)
        etiqueta, es_despacho, remito_n, fechahora
      FROM aux_expedicion
      WHERE etiqueta = $1
+     ${remitoId ? 'AND remito_id = $2' : ''}
      ORDER BY etiqueta DESC, fechahora DESC`,
-    [etiqueta],
+    remitoId ? [etiqueta, remitoId] : [etiqueta],
   );
   // Sin historial previo: nunca fue despachada (equivalente al comportamiento observado
   // en UnitFunciones.pas cuando el dataset no tiene filas).

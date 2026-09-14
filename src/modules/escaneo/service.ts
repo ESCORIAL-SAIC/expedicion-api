@@ -29,8 +29,17 @@ export async function escanear(esDespacho: boolean, remitoId: string, input: Esc
       throw new BusinessError(400, 'EMPTY_CODE', Messages.EMPTY_CODE);
     }
 
-    // Paso 2: ultimo estado global de la etiqueta.
-    const despachadaPreviamente = await obtenerUltimoEstadoEtiqueta(input.etiqueta);
+    // Paso 2: ultimo estado de la etiqueta.
+    //
+    // En despacho la pregunta es global ("esta etiqueta ya salio por algun lado"); en devolucion
+    // se acota al remito elegido, porque una etiqueta solo puede volver por el remito que la
+    // despacho. Sin ese filtro, una etiqueta despachada en el remito A se podria devolver por el
+    // B, y el DELETE que viene despues --que tampoco distingue remitos-- borraria registros
+    // ajenos.
+    const despachadaPreviamente = await obtenerUltimoEstadoEtiqueta(
+      input.etiqueta,
+      esDespacho ? undefined : remitoId,
+    );
     if (esDespacho) {
       if (despachadaPreviamente === true) {
         throw new BusinessError(409, 'LABEL_ALREADY_DISPATCHED', Messages.LABEL_ALREADY_DISPATCHED);
