@@ -33,16 +33,20 @@ function authRule() {
   return { match: Markers.auth, handler: () => [EMPLEADO_VALIDO] };
 }
 
-function maestroRule(controlFinal: boolean | null = true) {
+/**
+ * Peabody resuelve el producto por EAN/DUN contra V_UD_PRODUCTO, no contra un maestro de
+ * etiquetas: esos productos no tienen numero de serie, y su EAN y DUN son los mismos para todas
+ * las unidades. Por eso la fila no trae ni tipo ni control_final.
+ */
+function maestroRule(unidades = 1, esDun = false) {
   return {
-    match: Markers.etiquetasMaestroImportados,
+    match: Markers.productoPorCodigo,
     handler: () => [
       {
-        etiqueta: ean,
-        tipo: 'PEABODY',
         producto_id: productoId,
         producto_n: 'Producto Peabody',
-        control_final: controlFinal,
+        es_dun: esDun,
+        unidades,
       },
     ],
   };
@@ -152,19 +156,102 @@ describe('POST /peabody/:remitoId/escaneo', () => {
     expect(res.body.success).toBe(true);
   });
 
-  it('usa el TIPO del circuito y no el del body', async () => {
+  // El tipo del body se ignora: Peabody resuelve el producto por el codigo contra V_UD_PRODUCTO,
+  // sin maestro de etiquetas de por medio, y el TIPO sale siempre de la config del circuito.
+  it('resuelve el producto por el codigo y no consulta el maestro de etiquetas', async () => {
     queryPgMock.mockImplementation(
       makePgDispatcher([authRule(), maestroRule(), productosRule(), vistaRule(), insertRule()]),
     );
 
-    await request(app.server)
+    const res = await request(app.server)
       .post(`/peabody/${remitoId}/escaneo`)
       .send({ ...bodyEscaneo, tipo: 'COCINA' });
 
-    const llamadaMaestro = queryPgMock.mock.calls.find((c) =>
+    expect(res.status).toBe(201);
+    const llamadaProducto = queryPgMock.mock.calls.find((c) =>
+      Markers.productoPorCodigo(String(c[0])),
+    );
+    expect(llamadaProducto?.[1]).toEqual([ean]);
+    const consultoEtiquetas = queryPgMock.mock.calls.some((c) =>
       Markers.etiquetasMaestroImportados(String(c[0])),
     );
-    expect(llamadaMaestro?.[1]).toEqual([ean, 'PEABODY']);
+    expect(consultoEtiquetas).toBe(false);
+  });
+
+  // Un DUN es una caja entera: descuenta UNIDADESPORBULTO de una, y deja una fila por unidad
+  // (la vista de transaccion cuenta filas).
+  it('un DUN carga tantas filas como unidades trae la caja', async () => {
+    queryPgMock.mockImplementation(
+      makePgDispatcher([
+        authRule(),
+        maestroRule(3, true),
+        productosRule(),
+        vistaRule(0, 5),
+        insertRule(),
+      ]),
+    );
+
+    const res = await request(app.server)
+      .post(`/peabody/${remitoId}/escaneo`)
+      .send({ ...bodyEscaneo, etiqueta: '1' + ean });
+
+    expect(res.status).toBe(201);
+    const inserts = queryPgMock.mock.calls.filter((c) => Markers.insertStaging(String(c[0])));
+    expect(inserts).toHaveLength(3);
+  });
+
+  // Si la caja no entra en lo que falta no se carga NADA: partirla dejaria unidades fisicas sin
+  // registrar. El operario completa con EAN sueltos.
+  it('rechaza el DUN entero si no entra en el cupo restante', async () => {
+    queryPgMock.mockImplementation(
+      makePgDispatcher([
+        authRule(),
+        maestroRule(3, true),
+        productosRule(),
+        // 3 de 5: quedan 2, la caja trae 3.
+        vistaRule(3, 5),
+      ]),
+    );
+
+    const res = await request(app.server)
+      .post(`/peabody/${remitoId}/escaneo`)
+      .send({ ...bodyEscaneo, etiqueta: '1' + ean });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('ITEM_QUOTA_REACHED');
+    const inserts = queryPgMock.mock.calls.filter((c) => Markers.insertStaging(String(c[0])));
+    expect(inserts).toHaveLength(0);
+  });
+
+  it('un EAN suelto carga una sola unidad aunque el producto venga en cajas', async () => {
+    queryPgMock.mockImplementation(
+      makePgDispatcher([authRule(), maestroRule(1), productosRule(), vistaRule(4, 5), insertRule()]),
+    );
+
+    const res = await request(app.server).post(`/peabody/${remitoId}/escaneo`).send(bodyEscaneo);
+
+    expect(res.status).toBe(201);
+    const inserts = queryPgMock.mock.calls.filter((c) => Markers.insertStaging(String(c[0])));
+    expect(inserts).toHaveLength(1);
+  });
+
+  // El DUN de la caja master resuelve al mismo producto que el EAN de la unidad: el operario
+  // puede escanear cualquiera de los dos.
+  it('acepta el DUN ademas del EAN', async () => {
+    queryPgMock.mockImplementation(
+      makePgDispatcher([authRule(), maestroRule(), productosRule(), vistaRule(), insertRule()]),
+    );
+
+    const dun = '1' + ean;
+    const res = await request(app.server)
+      .post(`/peabody/${remitoId}/escaneo`)
+      .send({ ...bodyEscaneo, etiqueta: dun });
+
+    expect(res.status).toBe(201);
+    const llamadaProducto = queryPgMock.mock.calls.find((c) =>
+      Markers.productoPorCodigo(String(c[0])),
+    );
+    expect(llamadaProducto?.[1]).toEqual([dun]);
   });
 
   it('rechaza codigo vacio con el mensaje de la spec', async () => {
@@ -179,12 +266,9 @@ describe('POST /peabody/:remitoId/escaneo', () => {
     expect(res.body.error.message).toBe('No se ha ingresado un código. Reintente nuevamente.');
   });
 
-  it('rechaza etiqueta que no esta en el maestro de importados', async () => {
+  it('rechaza un codigo que no corresponde a ningun producto', async () => {
     queryPgMock.mockImplementation(
-      makePgDispatcher([
-        authRule(),
-        { match: Markers.etiquetasMaestroImportados, handler: () => [] },
-      ]),
+      makePgDispatcher([authRule(), { match: Markers.productoPorCodigo, handler: () => [] }]),
     );
 
     const res = await request(app.server).post(`/peabody/${remitoId}/escaneo`).send(bodyEscaneo);
@@ -340,6 +424,14 @@ describe('GET /remitos/:circuito', () => {
 
   // remitosCircuitoList va antes que remitosDespachoList: la query del circuito tambien
   // contiene 'PERMITE_DESPACHO = true' y el dispatcher devuelve la primera que matchea.
+  // El listado tambien consulta el avance por remito, para marcar los completos.
+  function avanceCircuitoRule() {
+    return {
+      match: Markers.avanceRemitos,
+      handler: () => [{ remito_id: remitoId, cantidad_escaneada: 1, cantidad_pedida: 3 }],
+    };
+  }
+
   function listRule(tipo: string) {
     return {
       match: Markers.remitosCircuitoList,
@@ -357,7 +449,7 @@ describe('GET /remitos/:circuito', () => {
   }
 
   it('lista los remitos del tipo del circuito', async () => {
-    queryPgMock.mockImplementation(makePgDispatcher([authRule(), listRule('PEABODY')]));
+    queryPgMock.mockImplementation(makePgDispatcher([authRule(), listRule('PEABODY'), avanceCircuitoRule()]));
 
     const res = await request(app.server)
       .get('/remitos/peabody')
@@ -369,7 +461,7 @@ describe('GET /remitos/:circuito', () => {
   });
 
   it('filtra por TIPO en el SQL y lee la vista de expedicion', async () => {
-    queryPgMock.mockImplementation(makePgDispatcher([authRule(), listRule('IMPORT')]));
+    queryPgMock.mockImplementation(makePgDispatcher([authRule(), listRule('IMPORT'), avanceCircuitoRule()]));
 
     await request(app.server).get('/remitos/importado').set('Authorization', basicAuthHeader());
 
@@ -382,7 +474,7 @@ describe('GET /remitos/:circuito', () => {
   });
 
   it('devuelve exactMatch cuando el remitoN coincide', async () => {
-    queryPgMock.mockImplementation(makePgDispatcher([authRule(), listRule('PEABODY')]));
+    queryPgMock.mockImplementation(makePgDispatcher([authRule(), listRule('PEABODY'), avanceCircuitoRule()]));
 
     const res = await request(app.server)
       .get(`/remitos/peabody?remitoN=${remitoN}`)

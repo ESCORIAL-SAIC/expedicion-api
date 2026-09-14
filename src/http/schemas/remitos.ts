@@ -10,6 +10,8 @@ export const detalleRemitoQuerySchema = z.object({
     .string()
     .catch('false')
     .transform((v) => v === 'true' || v === '1'),
+  // Opcional: filtra los items a los productos de ese tipo. Sin tipo, el remito completo.
+  tipo: z.string().catch('').optional(),
 });
 export type DetalleRemitoQuery = z.infer<typeof detalleRemitoQuerySchema>;
 

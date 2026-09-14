@@ -28,10 +28,13 @@ export async function remitosRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: requireAuth },
     async (request) => {
       const { remitoId } = request.params;
-      const { esDespacho } = detalleRemitoQuerySchema.parse(request.query ?? {});
+      const { esDespacho, tipo } = detalleRemitoQuerySchema.parse(request.query ?? {});
 
+      // Con tipo, los items se limitan a los productos de ese tipo dentro del remito: es lo que
+      // hace que entrar por COCINA no muestre los termotanques del mismo remito. Sin tipo, el
+      // remito completo (comportamiento historico).
       const [items, productosValidos] = await Promise.all([
-        obtenerVistaTransaccion(esDespacho, remitoId),
+        obtenerVistaTransaccion(esDespacho, remitoId, tipo || undefined),
         esDespacho ? obtenerProductosRemito(remitoId) : Promise.resolve(undefined),
       ]);
 

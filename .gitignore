@@ -3,3 +3,7 @@ dist/
 .env
 *.log
 coverage/
+
+# Capturas de pantalla que se sacan al probar contra el entorno local: son de un momento y de
+# un dataset concreto, no documentan nada estable.
+local-test/shots/

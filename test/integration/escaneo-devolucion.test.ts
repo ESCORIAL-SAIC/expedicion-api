@@ -61,6 +61,40 @@ describe('POST /devolucion/:remitoId/escaneo', () => {
     expect(res.body.error.message).toBe('Esta etiqueta no se encuentra habilitada para devolución.');
   });
 
+  // Una etiqueta solo puede devolverse por el remito que la despacho: el chequeo de "fue
+  // despachada" se acota a ese remito, no mira el historial global.
+  it('el chequeo de ultimo estado se acota al remito elegido', async () => {
+    queryPgMock.mockImplementation(
+      makePgDispatcher([
+        authRule(),
+        { match: Markers.ultimoEstadoEtiqueta, handler: () => [{ etiqueta, es_despacho: true }] },
+        { match: Markers.etiquetasMaestro, handler: () => [] },
+      ]),
+    );
+
+    await request(app.server).post(`/devolucion/${remitoId}/escaneo`).send(baseBody());
+
+    const llamada = queryPgMock.mock.calls.find((c) => Markers.ultimoEstadoEtiqueta(String(c[0])));
+    expect(String(llamada?.[0])).toContain('remito_id = $2');
+    expect(llamada?.[1]).toEqual([etiqueta, remitoId]);
+  });
+
+  // Una etiqueta despachada en OTRO remito no tiene movimientos en este, asi que se rechaza.
+  it('rechaza una etiqueta despachada por otro remito', async () => {
+    queryPgMock.mockImplementation(
+      makePgDispatcher([
+        authRule(),
+        // El filtro por remito deja la consulta sin filas: en ESTE remito nunca salio.
+        { match: Markers.ultimoEstadoEtiqueta, handler: () => [] },
+      ]),
+    );
+
+    const res = await request(app.server).post(`/devolucion/${remitoId}/escaneo`).send(baseBody());
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('LABEL_NOT_ENABLED_FOR_RETURN');
+  });
+
   it('404 LABEL_INVALID si no existe en el maestro de etiquetas', async () => {
     queryPgMock.mockImplementation(
       makePgDispatcher([

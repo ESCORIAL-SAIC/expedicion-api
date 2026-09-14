@@ -1,0 +1,89 @@
+# Entorno de prueba local para los circuitos IMPORT / PEABODY.
+#
+# Aislado del docker-compose.yml de despliegue: proyecto, contenedores, red y puertos propios
+# (API en 3001, Postgres en 55432) para poder correr en paralelo con el expedicion-api que apunta
+# a produccion, sin tocarlo.
+#
+# El esquema de init.sql NO es el de produccion: se reconstruyo a partir de las columnas que
+# piden las queries. Sirve para ejercitar el flujo, no para validar el esquema real.
+#
+# Uso:
+#   docker compose -f local-test/docker-compose.test.yml up -d
+#   curl -u TEST:1234 http://localhost:3001/remitos/peabody
+#   docker compose -f local-test/docker-compose.test.yml down -v   # -v borra los datos
+name: expedicion-api-test
+
+services:
+  postgres-test:
+    image: postgres:16-alpine
+    container_name: expedicion-pg-test
+    environment:
+      POSTGRES_DB: ESCORIAL
+      POSTGRES_USER: test
+      POSTGRES_PASSWORD: test
+    ports:
+      - '55432:5432'
+    volumes:
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U test -d ESCORIAL']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # Maestro de etiquetas de Suipacha, que usa el circuito viejo (/despacho) para COCINA y
+  # TERMOTANQUE. Los circuitos IMPORT / PEABODY leen el suyo de Postgres y no lo necesitan.
+  mssql-test:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: expedicion-mssql-test
+    environment:
+      ACCEPT_EULA: 'Y'
+      MSSQL_SA_PASSWORD: 'Test_1234!'
+      MSSQL_PID: Developer
+    ports:
+      - '51433:1433'
+    healthcheck:
+      test: ['CMD-SHELL', '/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "Test_1234!" -C -Q "SELECT 1" || exit 1']
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  # La imagen de SQL Server no corre scripts de init sola: se aplica el schema una vez y sale.
+  mssql-init:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: expedicion-mssql-init
+    depends_on:
+      mssql-test:
+        condition: service_healthy
+    volumes:
+      - ./init-mssql.sql:/init-mssql.sql:ro
+    entrypoint:
+      - /bin/bash
+      - -c
+      - '/opt/mssql-tools18/bin/sqlcmd -S mssql-test -U sa -P "Test_1234!" -C -i /init-mssql.sql'
+    restart: 'no'
+
+  api-test:
+    image: ghcr.io/escorial-saic/expedicion-api:${IMAGE_TAG:-dev}
+    container_name: expedicion-api-test
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+      mssql-init:
+        condition: service_completed_successfully
+    environment:
+      PG_HOST: postgres-test
+      PG_PORT: '5432'
+      PG_DATABASE: ESCORIAL
+      PG_USER: test
+      PG_PASSWORD: test
+      MSSQL_HOST: mssql-test
+      MSSQL_PORT: '1433'
+      MSSQL_DATABASE: Etiquetas
+      MSSQL_USER: sa
+      MSSQL_PASSWORD: 'Test_1234!'
+      PORT: '3000'
+      LOG_LEVEL: info
+    ports:
+      - '3001:3000'

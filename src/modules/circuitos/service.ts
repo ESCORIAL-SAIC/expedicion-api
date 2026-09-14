@@ -14,7 +14,17 @@ import {
 } from '../escaneo/repository.js';
 import type { MasterLabelRow, ScanResult } from '../escaneo/types.js';
 import type { CircuitoConfig } from './config.js';
-import { obtenerEtiquetasMaestroImportados } from './repository.js';
+import { obtenerEtiquetasMaestroImportados, obtenerProductoPorCodigo } from './repository.js';
+
+/**
+ * Resuelve el codigo escaneado contra el maestro que corresponda al circuito: la tabla de
+ * etiquetas cuando cada unidad tiene su numero, o el producto por EAN/DUN cuando no.
+ */
+function resolverCodigo(circuito: CircuitoConfig, codigo: string): Promise<MasterLabelRow[]> {
+  return circuito.maestro === 'producto'
+    ? obtenerProductoPorCodigo(codigo, circuito.tipo)
+    : obtenerEtiquetasMaestroImportados(codigo, circuito.tipo);
+}
 
 export interface EscanearCircuitoInput {
   etiqueta: string;
@@ -26,9 +36,10 @@ export interface EscanearCircuitoInput {
  *
  * Sigue el mismo orden de pasos que escanear() (escaneo/service.ts), reusando sus
  * repositorios, con tres diferencias que salen de la config del circuito:
- *   - paso 2 (ya despachada) y paso 4 (duplicado en staging) se saltean cuando la etiqueta
+ *   - paso 2 (ya despachada) y paso 4 (duplicado en staging) se saltean cuando el codigo
  *     no identifica una unidad unica (caso PEABODY),
- *   - paso 3 lee el maestro de importados en Postgres en vez del maestro MSSQL,
+ *   - paso 3 resuelve contra el maestro del circuito: la tabla de etiquetas (IMPORT) o el
+ *     producto por EAN/DUN (PEABODY, que no tiene maestro de etiquetas),
  *   - paso 5 (CONTROL_FINAL) no aplica.
  * Los pasos 1, 6, 7, 8 y 9 son identicos al despacho normal.
  *
@@ -54,7 +65,7 @@ export async function escanearCircuito(
     }
 
     // Paso 3: existe en el maestro de etiquetas con importados (Postgres).
-    const maestro = await obtenerEtiquetasMaestroImportados(input.etiqueta, circuito.tipo);
+    const maestro = await resolverCodigo(circuito, input.etiqueta);
     if (maestro.length === 0) {
       throw new BusinessError(404, 'LABEL_NOT_FOUND', Messages.labelNotFoundDespacho(input.etiqueta));
     }
@@ -86,32 +97,45 @@ export async function escanearCircuito(
       throw new BusinessError(422, 'PRODUCT_NOT_IN_REMITO', Messages.productNotInRemito(input.etiqueta));
     }
 
+    // Un DUN vale UNIDADESPORBULTO unidades y un EAN vale 1, asi que el cupo se mide contra las
+    // unidades que trae el codigo, no contra "una mas".
+    const unidades = Math.max(candidatosEnRemito[0].unidades ?? 1, 1);
+
     let ganador: { candidato: MasterLabelRow; itemRemitoId: string } | null = null;
     for (const candidato of candidatosEnRemito) {
       const productoRemito = productosRemito.find((p) => p.productoId === candidato.productoId);
       if (!productoRemito) continue;
       const vistaItem = vistaTransaccion.find((v) => v.itemRemitoId === productoRemito.itemRemitoId);
-      const cupoCompleto = vistaItem ? vistaItem.cantidad === vistaItem.cantidadOriginal : false;
-      if (!cupoCompleto) {
+      // Sin fila en la vista el item todavia no tiene nada escaneado: entra si el cupo alcanza.
+      const restante = vistaItem ? vistaItem.cantidadOriginal - vistaItem.cantidad : 0;
+      if (restante >= (candidato.unidades ?? 1)) {
         ganador = { candidato, itemRemitoId: productoRemito.itemRemitoId };
         break;
       }
     }
 
     if (!ganador) {
+      // La caja entera no entra en lo que falta. No se carga nada: partirla dejaria unidades
+      // fisicas sin registrar. El operario completa con EAN sueltos.
       throw new BusinessError(422, 'ITEM_QUOTA_REACHED', Messages.ITEM_QUOTA_REACHED);
     }
 
-    // Paso 8: insert en staging.
-    await insertarEnStaging({
-      esDespacho: true,
-      remitoN: input.remitoN,
-      etiqueta: input.etiqueta,
-      productoN: ganador.candidato.productoN,
-      remitoId,
-      itemRemitoId: ganador.itemRemitoId,
-      productoId: ganador.candidato.productoId,
-    });
+    // Paso 8: insert en staging, una fila POR UNIDAD.
+    //
+    // La vista de transaccion cuenta filas (COUNT), asi que una caja de 10 son 10 filas con el
+    // mismo DUN en `etiqueta`. Es lo que hace que el cupo, el total y el eliminar (que descuenta
+    // de a una) sigan funcionando sin cambiar como se cuenta.
+    for (let i = 0; i < unidades; i += 1) {
+      await insertarEnStaging({
+        esDespacho: true,
+        remitoN: input.remitoN,
+        etiqueta: input.etiqueta,
+        productoN: ganador.candidato.productoN,
+        remitoId,
+        itemRemitoId: ganador.itemRemitoId,
+        productoId: ganador.candidato.productoId,
+      });
+    }
 
     const vistaFinal = await obtenerVistaTransaccion(true, remitoId);
     const itemFinal = vistaFinal.find((v) => v.itemRemitoId === ganador!.itemRemitoId);
@@ -138,7 +162,7 @@ export interface EliminarCircuitoInput {
 
 /**
  * Quita una etiqueta del staging del remito. Igual que eliminarEtiqueta() del despacho
- * normal, pero validando la existencia contra el maestro de importados.
+ * normal, pero validando la existencia contra el maestro que corresponda al circuito.
  *
  * Borra el registro mas reciente que matchee etiqueta+remito. Con codigos repetidos
  * (PEABODY) eso significa "descontar una unidad", que es justo lo que se necesita.
@@ -152,7 +176,7 @@ export async function eliminarEtiquetaCircuito(
     throw new BusinessError(400, 'EMPTY_CODE', Messages.EMPTY_CODE);
   }
 
-  const maestro = await obtenerEtiquetasMaestroImportados(input.etiqueta, circuito.tipo);
+  const maestro = await resolverCodigo(circuito, input.etiqueta);
   if (maestro.length === 0) {
     throw new BusinessError(404, 'LABEL_INVALID', Messages.labelInvalido(input.etiqueta));
   }
