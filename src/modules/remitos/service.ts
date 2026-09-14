@@ -67,13 +67,30 @@ async function obtenerAvancePorRemito(esDespacho: boolean): Promise<Map<string, 
   return avance;
 }
 
-// Replica QueryRemitoDespacho.
+/**
+ * Listado de remitos a despachar, de los CUATRO tipos.
+ *
+ * Lee ve_items_remito_despacho y no vp_itemremito (que es la que usa el Delphi) por dos razones:
+ *
+ *   1. vp_itemremito solo puede devolver COCINA o TERMOTANQUE -- su TIPO sale de un CASE sobre
+ *      rv.numerador_id, la cabecera del remito -- asi que los remitos de importados y Peabody no
+ *      aparecerian en ningun lado y sus circuitos quedarian inalcanzables.
+ *   2. Aca el TIPO sale del producto (coc.tipoproducfiscal), asi que un remito puede tener items
+ *      de tipos distintos y el par (remito, tipo) identifica un pedazo real y filtrable.
+ *
+ * Consecuencia de (2): un remito mixto devuelve una fila por tipo, y cada una lleva SOLO a sus
+ * items (ver obtenerVistaTransaccion con tipo). En vp_itemremito eso no aplica: el remito entero
+ * es de un tipo.
+ *
+ * Nota: esta vista trae consignacion fija en false, a diferencia de vp_itemremito. El campo hoy
+ * es informativo -- la regla consignacion/venta no esta implementada ni aca ni en el Delphi.
+ */
 export async function listarRemitosDespacho(
   remitoN: string,
 ): Promise<{ exactMatch: RemitoListItem | null; items: RemitoListItem[] }> {
   const rows = await queryPg<RemitoDespachoRow>(
     `SELECT REMITO_N, CLIENTE_N, REMITO_ID, CLIENTE_ID, TIPO, CONSIGNACION
-     FROM public.vp_itemremito
+     FROM public.ve_items_remito_despacho
      WHERE PERMITE_DESPACHO = true
      GROUP BY REMITO_N, CLIENTE_N, REMITO_ID, CLIENTE_ID, TIPO, CONSIGNACION
      ORDER BY REMITO_N`,
@@ -133,11 +150,29 @@ interface VistaTransaccionRow {
   cantidad_restante: number;
 }
 
-// Replica QueryVistaTransaccion (staging vs esperado por producto, incluye cantidad restante).
+/**
+ * Replica QueryVistaTransaccion (staging vs esperado por producto, incluye cantidad restante).
+ *
+ * Con `tipo` filtra los items a los productos de ese tipo, segun ve_items_remito_despacho. Sin
+ * `tipo` devuelve el remito completo, que es el comportamiento historico y el que corresponde a
+ * los remitos de vp_itemremito, donde el tipo es del remito entero y filtrar no tendria sentido.
+ *
+ * El filtro deja pasar las filas huerfanas (ITEMREMITO_ID NULL): son escaneos que no se pudieron
+ * imputar a ningun item, no tienen tipo, y esconderlas seria peor -- son las que bloquean el
+ * confirmar y hay que poder verlas.
+ */
 export async function obtenerVistaTransaccion(
   esDespacho: boolean,
   remitoId: string,
+  tipo?: string,
 ): Promise<VistaTransaccionItem[]> {
+  const filtroTipo = tipo
+    ? `WHERE Q1.ITEMREMITO_ID IS NULL OR Q1.PRODUCTO_ID IN (
+         SELECT PRODUCTO_ID FROM public.ve_items_remito_despacho
+         WHERE REMITO_ID = $2 AND TIPO = $3
+       )`
+    : '';
+
   const rows = await queryPg<VistaTransaccionRow>(
     `SELECT * FROM (
        SELECT
@@ -178,8 +213,9 @@ export async function obtenerVistaTransaccion(
                   COALESCE(NULLIF(EAPRD.DESCRIPCIONAPP, ''), PRD.DESCRIPCION), IRV.CANTIDAD2_CANTIDAD
        ) Q
      ) Q1
+     ${filtroTipo}
      ORDER BY CASE WHEN Q1.ITEMREMITO_ID IS NULL THEN 0 ELSE 1 END DESC, Q1.PRODUCTO_N, Q1.CANTIDAD_RESTANTE DESC`,
-    [esDespacho, remitoId],
+    tipo ? [esDespacho, remitoId, tipo] : [esDespacho, remitoId],
   );
 
   return rows.map((r) => ({

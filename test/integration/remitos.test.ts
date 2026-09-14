@@ -231,6 +231,46 @@ describe('GET /remitos/:remitoId/detalle', () => {
     queryMssqlMock.mockReset();
   });
 
+  // Un remito puede tener productos de varios tipos y cada fila del listado es uno de esos
+  // pedazos: entrar por COCINA tiene que traer solo las cocinas, no el remito entero.
+  it('con tipo, la query filtra los items por los productos de ese tipo', async () => {
+    queryPgMock.mockImplementation(
+      makePgDispatcher([
+        authRule(),
+        { match: Markers.vistaTransaccion, handler: () => [] },
+        { match: Markers.productosRemito, handler: () => [] },
+      ]),
+    );
+
+    await request(app.server)
+      .get('/remitos/remito-1/detalle')
+      .set('Authorization', basicAuthHeader('jperez', '1234'))
+      .query({ esDespacho: 'true', tipo: 'COCINA' });
+
+    const llamada = queryPgMock.mock.calls.find((c) => Markers.vistaTransaccion(String(c[0])));
+    expect(String(llamada?.[0])).toContain('ve_items_remito_despacho');
+    expect(llamada?.[1]).toEqual([true, 'remito-1', 'COCINA']);
+  });
+
+  it('sin tipo, la query trae el remito completo', async () => {
+    queryPgMock.mockImplementation(
+      makePgDispatcher([
+        authRule(),
+        { match: Markers.vistaTransaccion, handler: () => [] },
+        { match: Markers.productosRemito, handler: () => [] },
+      ]),
+    );
+
+    await request(app.server)
+      .get('/remitos/remito-1/detalle')
+      .set('Authorization', basicAuthHeader('jperez', '1234'))
+      .query({ esDespacho: 'true' });
+
+    const llamada = queryPgMock.mock.calls.find((c) => Markers.vistaTransaccion(String(c[0])));
+    expect(String(llamada?.[0])).not.toContain('ve_items_remito_despacho');
+    expect(llamada?.[1]).toEqual([true, 'remito-1']);
+  });
+
   it('esDespacho=true incluye productosValidos', async () => {
     queryPgMock.mockImplementation(
       makePgDispatcher([

@@ -138,47 +138,106 @@ VALUES
    '00000000-0000-0000-0000-000000000013', 1, '0003400002834', 'DEVOLUCIONES SA');
 
 -- ---------------------------------------------------------------------------
--- Listados de remitos: tabla base + las dos vistas que usa la API.
---   vp_itemremito            -> despacho / devolucion (circuito clasico)
---   ve_items_remito_despacho -> circuitos IMPORT / PEABODY
+-- Listados de remitos.
+--
+-- Las dos vistas reales son POR ITEM (traen itemremito_id, producto_id, cantidad) y difieren en
+-- de donde sacan el TIPO, que es la diferencia que importa:
+--
+--   vp_itemremito            el tipo sale de la CABECERA del remito
+--                            (CASE sobre rv.numerador_id -> 'COCINA' | 'TERMOTANQUE').
+--                            Un remito entero es de un solo tipo, y solo puede dar esos dos.
+--                            Es la que usa la app Delphi.
+--
+--   ve_items_remito_despacho el tipo sale del PRODUCTO (coc.tipoproducfiscal), asi que un mismo
+--                            remito puede tener items de tipos distintos, y cubre los cuatro.
+--                            Es la unica que devuelve IMPORT y PEABODY.
+--
+-- Aca se replica esa diferencia: la tabla base guarda el tipo por producto y por remito, y cada
+-- vista arma el suyo como la real. La version anterior de este archivo tenia un remito con dos
+-- tipos sobre el mismo remito_id en las DOS vistas, algo que vp_itemremito no puede producir --
+-- y eso hacia que entrar por COCINA mostrara tambien los termotanques.
 -- ---------------------------------------------------------------------------
-CREATE TABLE public._items_remito_base (
+
+-- Tipo por PRODUCTO (equivalente a ve_productos_despacho.tipoproducfiscal).
+CREATE TABLE public.ve_productos_despacho (
+  id               uuid PRIMARY KEY,
+  tipoproducfiscal text
+);
+
+INSERT INTO public.ve_productos_despacho (id, tipoproducfiscal) VALUES
+  ('00000000-0000-0000-0000-000000000011', 'PEABODY'),      -- cafetera
+  ('00000000-0000-0000-0000-000000000016', 'PEABODY'),      -- pava electrica
+  ('00000000-0000-0000-0000-000000000012', 'IMPORT'),       -- anafe importado
+  ('00000000-0000-0000-0000-000000000013', 'COCINA'),       -- cocina 4h
+  ('00000000-0000-0000-0000-000000000015', 'COCINA'),       -- cocina 6h
+  ('00000000-0000-0000-0000-000000000014', 'TERMOTANQUE');  -- termotanque
+
+-- Cabecera del remito. numerador_tipo emula el CASE sobre rv.numerador_id de vp_itemremito: es el
+-- tipo que esa vista le asigna a TODOS los items del remito.
+CREATE TABLE public._remito_cabecera (
+  remito_id         uuid PRIMARY KEY,
   remito_n          text,
   cliente_n         text,
-  remito_id         uuid,
   cliente_id        uuid,
-  tipo              text,
+  numerador_tipo    text,
   consignacion      boolean,
   permite_despacho  boolean
 );
 
-INSERT INTO public._items_remito_base
-  (remito_n, cliente_n, remito_id, cliente_id, tipo, consignacion, permite_despacho)
+INSERT INTO public._remito_cabecera
+  (remito_id, remito_n, cliente_n, cliente_id, numerador_tipo, consignacion, permite_despacho)
 VALUES
-  ('0004100000018', 'CASA CENTRAL PEABODY SA',      '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-0000000000c1', 'PEABODY',     false, true),
-  ('0003500001325', 'DISTRIBUIDORA IMPORTADOS SRL', '00000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-0000000000c2', 'IMPORT',      false, true),
-  ('0003400002829', 'ELECTRO HOGAR SA',             '00000000-0000-0000-0000-000000000003', '00000000-0000-0000-0000-0000000000c3', 'COCINA',      false, true),
-  ('0003400002829', 'ELECTRO HOGAR SA',             '00000000-0000-0000-0000-000000000003', '00000000-0000-0000-0000-0000000000c3', 'TERMOTANQUE', false, true),
-  ('0003400002830', 'CADENA BLANCA SRL',            '00000000-0000-0000-0000-000000000004', '00000000-0000-0000-0000-0000000000c4', 'COCINA',      false, true),
-  ('0004100000019', 'SUCURSAL NORTE PEABODY',       '00000000-0000-0000-0000-000000000005', '00000000-0000-0000-0000-0000000000c5', 'PEABODY',     false, true),
-  ('0003400002831', 'MAYORISTA SUR SA',             '00000000-0000-0000-0000-000000000006', '00000000-0000-0000-0000-0000000000c6', 'COCINA',      false, true),
-  ('0003400002831', 'MAYORISTA SUR SA',             '00000000-0000-0000-0000-000000000006', '00000000-0000-0000-0000-0000000000c6', 'TERMOTANQUE', false, true),
-  ('0003400002832', 'CLIENTE MINORISTA',            '00000000-0000-0000-0000-000000000007', '00000000-0000-0000-0000-0000000000c7', 'COCINA',      false, true),
-  ('0003400002833', 'CADENA NACIONAL SA',           '00000000-0000-0000-0000-000000000008', '00000000-0000-0000-0000-0000000000c8', 'COCINA',      false, true),
-  -- Remito en consignacion (la regla consignacion/venta no esta implementada, ni aca ni en el
-  -- Delphi: el campo viaja como informativo).
-  ('0003500001326', 'IMPORTADORA MIXTA SA',         '00000000-0000-0000-0000-000000000009', '00000000-0000-0000-0000-0000000000c9', 'IMPORT',      true,  true),
-  ('0003500001326', 'IMPORTADORA MIXTA SA',         '00000000-0000-0000-0000-000000000009', '00000000-0000-0000-0000-0000000000c9', 'PEABODY',     true,  true),
-  -- Devolucion: no aparece en ningun listado de despacho.
-  ('0003400002834', 'DEVOLUCIONES SA',              '00000000-0000-0000-0000-000000000010', '00000000-0000-0000-0000-0000000000ca', 'COCINA',      false, false);
+  ('00000000-0000-0000-0000-000000000001', '0004100000018', 'CASA CENTRAL PEABODY SA',      '00000000-0000-0000-0000-0000000000c1', 'TERMOTANQUE', false, true),
+  ('00000000-0000-0000-0000-000000000002', '0003500001325', 'DISTRIBUIDORA IMPORTADOS SRL', '00000000-0000-0000-0000-0000000000c2', 'TERMOTANQUE', false, true),
+  ('00000000-0000-0000-0000-000000000003', '0003400002829', 'ELECTRO HOGAR SA',             '00000000-0000-0000-0000-0000000000c3', 'COCINA',      false, true),
+  ('00000000-0000-0000-0000-000000000004', '0003400002830', 'CADENA BLANCA SRL',            '00000000-0000-0000-0000-0000000000c4', 'COCINA',      false, true),
+  ('00000000-0000-0000-0000-000000000005', '0004100000019', 'SUCURSAL NORTE PEABODY',       '00000000-0000-0000-0000-0000000000c5', 'TERMOTANQUE', false, true),
+  ('00000000-0000-0000-0000-000000000006', '0003400002831', 'MAYORISTA SUR SA',             '00000000-0000-0000-0000-0000000000c6', 'COCINA',      false, true),
+  ('00000000-0000-0000-0000-000000000007', '0003400002832', 'CLIENTE MINORISTA',            '00000000-0000-0000-0000-0000000000c7', 'COCINA',      false, true),
+  ('00000000-0000-0000-0000-000000000008', '0003400002833', 'CADENA NACIONAL SA',           '00000000-0000-0000-0000-0000000000c8', 'COCINA',      false, true),
+  -- Consignacion: el campo viaja como informativo (la regla consignacion/venta no esta
+  -- implementada, ni aca ni en el Delphi). Ojo que ve_items_remito_despacho lo trae fijo en false.
+  ('00000000-0000-0000-0000-000000000009', '0003500001326', 'IMPORTADORA MIXTA SA',         '00000000-0000-0000-0000-0000000000c9', 'TERMOTANQUE', true,  true),
+  ('00000000-0000-0000-0000-000000000010', '0003400002834', 'DEVOLUCIONES SA',              '00000000-0000-0000-0000-0000000000ca', 'COCINA',      false, false);
 
+-- Tipo de la CABECERA: un remito, un solo tipo. Solo COCINA / TERMOTANQUE.
 CREATE VIEW public.vp_itemremito AS
-  SELECT remito_n, cliente_n, remito_id, cliente_id, tipo, consignacion, permite_despacho
-  FROM public._items_remito_base;
+  SELECT
+    c.permite_despacho,
+    c.remito_n,
+    c.remito_id,
+    i.id                 AS itemremito_id,
+    i.referenciatipo_id  AS producto_id,
+    p.descripcion        AS producto_n,
+    i.cantidad2_cantidad AS cantidad,
+    c.cliente_n,
+    c.cliente_id,
+    c.numerador_tipo     AS tipo,
+    c.consignacion
+  FROM public._remito_cabecera c
+  JOIN public.v_itemegresoinventario i ON i.placeowner_id = c.remito_id
+  JOIN public.v_producto p             ON p.id = i.referenciatipo_id;
 
+-- Tipo del PRODUCTO: un remito puede tener items de varios tipos. Cubre los cuatro.
+-- consignacion va fija en false, igual que la vista real.
 CREATE VIEW public.ve_items_remito_despacho AS
-  SELECT remito_n, cliente_n, remito_id, cliente_id, tipo, consignacion, permite_despacho
-  FROM public._items_remito_base;
+  SELECT
+    true                 AS permite_despacho,
+    c.remito_n,
+    c.remito_id,
+    i.id                 AS itemremito_id,
+    i.referenciatipo_id  AS producto_id,
+    p.descripcion        AS producto_n,
+    i.cantidad2_cantidad AS cantidad,
+    c.cliente_n,
+    c.cliente_id,
+    prod.tipoproducfiscal AS tipo,
+    false                AS consignacion
+  FROM public._remito_cabecera c
+  JOIN public.v_itemegresoinventario i     ON i.placeowner_id = c.remito_id
+  JOIN public.v_producto p                 ON p.id = i.referenciatipo_id
+  JOIN public.ve_productos_despacho prod   ON prod.id = i.referenciatipo_id
+  WHERE c.permite_despacho;
 
 -- ---------------------------------------------------------------------------
 -- Maestro de etiquetas de importados y Peabody (Postgres).
