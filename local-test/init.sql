@@ -67,6 +67,21 @@ INSERT INTO public.v_ud_producto (id, descripcionapp, codigogs1, codigo_dun) VAL
   ('00000000-0000-0000-0000-0000000000a4', 'TERMOTANQUE 80L', '', ''),   -- termo: idem
   ('00000000-0000-0000-0000-0000000000a5', '', '', '');                  -- cocina 6h
 
+-- Tabla base del producto. UNIDADESPORBULTO es cuantas unidades trae la caja master, y es lo que
+-- descuenta un escaneo de DUN. Solo aplica a los productos que tienen DUN (Peabody).
+CREATE TABLE public.producto (
+  id                uuid PRIMARY KEY,
+  unidadesporbulto  integer
+);
+
+INSERT INTO public.producto (id, unidadesporbulto) VALUES
+  ('00000000-0000-0000-0000-000000000011', 3),     -- cafetera: caja de 3
+  ('00000000-0000-0000-0000-000000000016', 2),     -- pava: caja de 2
+  ('00000000-0000-0000-0000-000000000012', NULL),  -- importado: sin DUN, no aplica
+  ('00000000-0000-0000-0000-000000000013', NULL),
+  ('00000000-0000-0000-0000-000000000014', NULL),
+  ('00000000-0000-0000-0000-000000000015', NULL);
+
 INSERT INTO public.v_producto (id, boextension_id, descripcion) VALUES
   ('00000000-0000-0000-0000-000000000011', '00000000-0000-0000-0000-0000000000a1',
    'CAFETERA PEABODY PE-CT4201 1.2L'),

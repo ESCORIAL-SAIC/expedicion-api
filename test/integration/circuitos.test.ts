@@ -38,13 +38,15 @@ function authRule() {
  * etiquetas: esos productos no tienen numero de serie, y su EAN y DUN son los mismos para todas
  * las unidades. Por eso la fila no trae ni tipo ni control_final.
  */
-function maestroRule() {
+function maestroRule(unidades = 1, esDun = false) {
   return {
     match: Markers.productoPorCodigo,
     handler: () => [
       {
         producto_id: productoId,
         producto_n: 'Producto Peabody',
+        es_dun: esDun,
+        unidades,
       },
     ],
   };
@@ -174,6 +176,63 @@ describe('POST /peabody/:remitoId/escaneo', () => {
       Markers.etiquetasMaestroImportados(String(c[0])),
     );
     expect(consultoEtiquetas).toBe(false);
+  });
+
+  // Un DUN es una caja entera: descuenta UNIDADESPORBULTO de una, y deja una fila por unidad
+  // (la vista de transaccion cuenta filas).
+  it('un DUN carga tantas filas como unidades trae la caja', async () => {
+    queryPgMock.mockImplementation(
+      makePgDispatcher([
+        authRule(),
+        maestroRule(3, true),
+        productosRule(),
+        vistaRule(0, 5),
+        insertRule(),
+      ]),
+    );
+
+    const res = await request(app.server)
+      .post(`/peabody/${remitoId}/escaneo`)
+      .send({ ...bodyEscaneo, etiqueta: '1' + ean });
+
+    expect(res.status).toBe(201);
+    const inserts = queryPgMock.mock.calls.filter((c) => Markers.insertStaging(String(c[0])));
+    expect(inserts).toHaveLength(3);
+  });
+
+  // Si la caja no entra en lo que falta no se carga NADA: partirla dejaria unidades fisicas sin
+  // registrar. El operario completa con EAN sueltos.
+  it('rechaza el DUN entero si no entra en el cupo restante', async () => {
+    queryPgMock.mockImplementation(
+      makePgDispatcher([
+        authRule(),
+        maestroRule(3, true),
+        productosRule(),
+        // 3 de 5: quedan 2, la caja trae 3.
+        vistaRule(3, 5),
+      ]),
+    );
+
+    const res = await request(app.server)
+      .post(`/peabody/${remitoId}/escaneo`)
+      .send({ ...bodyEscaneo, etiqueta: '1' + ean });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('ITEM_QUOTA_REACHED');
+    const inserts = queryPgMock.mock.calls.filter((c) => Markers.insertStaging(String(c[0])));
+    expect(inserts).toHaveLength(0);
+  });
+
+  it('un EAN suelto carga una sola unidad aunque el producto venga en cajas', async () => {
+    queryPgMock.mockImplementation(
+      makePgDispatcher([authRule(), maestroRule(1), productosRule(), vistaRule(4, 5), insertRule()]),
+    );
+
+    const res = await request(app.server).post(`/peabody/${remitoId}/escaneo`).send(bodyEscaneo);
+
+    expect(res.status).toBe(201);
+    const inserts = queryPgMock.mock.calls.filter((c) => Markers.insertStaging(String(c[0])));
+    expect(inserts).toHaveLength(1);
   });
 
   // El DUN de la caja master resuelve al mismo producto que el EAN de la unidad: el operario

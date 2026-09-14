@@ -97,32 +97,45 @@ export async function escanearCircuito(
       throw new BusinessError(422, 'PRODUCT_NOT_IN_REMITO', Messages.productNotInRemito(input.etiqueta));
     }
 
+    // Un DUN vale UNIDADESPORBULTO unidades y un EAN vale 1, asi que el cupo se mide contra las
+    // unidades que trae el codigo, no contra "una mas".
+    const unidades = Math.max(candidatosEnRemito[0].unidades ?? 1, 1);
+
     let ganador: { candidato: MasterLabelRow; itemRemitoId: string } | null = null;
     for (const candidato of candidatosEnRemito) {
       const productoRemito = productosRemito.find((p) => p.productoId === candidato.productoId);
       if (!productoRemito) continue;
       const vistaItem = vistaTransaccion.find((v) => v.itemRemitoId === productoRemito.itemRemitoId);
-      const cupoCompleto = vistaItem ? vistaItem.cantidad === vistaItem.cantidadOriginal : false;
-      if (!cupoCompleto) {
+      // Sin fila en la vista el item todavia no tiene nada escaneado: entra si el cupo alcanza.
+      const restante = vistaItem ? vistaItem.cantidadOriginal - vistaItem.cantidad : 0;
+      if (restante >= (candidato.unidades ?? 1)) {
         ganador = { candidato, itemRemitoId: productoRemito.itemRemitoId };
         break;
       }
     }
 
     if (!ganador) {
+      // La caja entera no entra en lo que falta. No se carga nada: partirla dejaria unidades
+      // fisicas sin registrar. El operario completa con EAN sueltos.
       throw new BusinessError(422, 'ITEM_QUOTA_REACHED', Messages.ITEM_QUOTA_REACHED);
     }
 
-    // Paso 8: insert en staging.
-    await insertarEnStaging({
-      esDespacho: true,
-      remitoN: input.remitoN,
-      etiqueta: input.etiqueta,
-      productoN: ganador.candidato.productoN,
-      remitoId,
-      itemRemitoId: ganador.itemRemitoId,
-      productoId: ganador.candidato.productoId,
-    });
+    // Paso 8: insert en staging, una fila POR UNIDAD.
+    //
+    // La vista de transaccion cuenta filas (COUNT), asi que una caja de 10 son 10 filas con el
+    // mismo DUN en `etiqueta`. Es lo que hace que el cupo, el total y el eliminar (que descuenta
+    // de a una) sigan funcionando sin cambiar como se cuenta.
+    for (let i = 0; i < unidades; i += 1) {
+      await insertarEnStaging({
+        esDespacho: true,
+        remitoN: input.remitoN,
+        etiqueta: input.etiqueta,
+        productoN: ganador.candidato.productoN,
+        remitoId,
+        itemRemitoId: ganador.itemRemitoId,
+        productoId: ganador.candidato.productoId,
+      });
+    }
 
     const vistaFinal = await obtenerVistaTransaccion(true, remitoId);
     const itemFinal = vistaFinal.find((v) => v.itemRemitoId === ganador!.itemRemitoId);
