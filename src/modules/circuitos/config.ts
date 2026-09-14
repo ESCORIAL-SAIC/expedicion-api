@@ -28,6 +28,14 @@ export interface CircuitoConfig {
    * es un registro de la linea de produccion propia, y estos productos no pasan por ella.
    */
   validaControlFinal: boolean;
+  /**
+   * De donde sale el producto al escanear un codigo.
+   *
+   * 'etiquetas'  vp_etiquetas_con_importados, una fila por unidad fisica (numero de serie).
+   * 'producto'   V_UD_PRODUCTO por CODIGOGS1 (EAN) o CODIGO_DUN: el codigo identifica al
+   *              PRODUCTO, no a la unidad, asi que se repite en todas sus cajas.
+   */
+  maestro: 'etiquetas' | 'producto';
 }
 
 /**
@@ -42,12 +50,16 @@ export const CIRCUITO_IMPORTADO: CircuitoConfig = {
   validaYaDespachada: true,
   validaDuplicado: true,
   validaControlFinal: false,
+  maestro: 'etiquetas',
 };
 
 /**
- * Peabody. Sin numeros de serie: el mismo EAN llega en todas las unidades del producto, por
- * lo que los pasos 2 y 4 quedan apagados y el unico tope de cantidad es el cupo del item
- * contra CANTIDAD_ORIGINAL (paso 7).
+ * Peabody. No tiene numeros de serie NI maestro de etiquetas: los productos solo tienen EAN y
+ * DUN, cargados en V_UD_PRODUCTO, y los dos son iguales para todas las unidades del mismo
+ * producto. Por eso el codigo escaneado identifica al producto, no a la caja.
+ *
+ * De ahi que los pasos 2 y 4 esten apagados -- rechazarian la segunda unidad -- y que el unico
+ * tope sea el cupo del item contra CANTIDAD_ORIGINAL (paso 7).
  */
 export const CIRCUITO_PEABODY: CircuitoConfig = {
   slug: 'peabody',
@@ -55,6 +67,7 @@ export const CIRCUITO_PEABODY: CircuitoConfig = {
   validaYaDespachada: false,
   validaDuplicado: false,
   validaControlFinal: false,
+  maestro: 'producto',
 };
 
 export const CIRCUITOS: readonly CircuitoConfig[] = [CIRCUITO_IMPORTADO, CIRCUITO_PEABODY];

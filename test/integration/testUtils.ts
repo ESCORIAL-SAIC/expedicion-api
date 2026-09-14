@@ -48,6 +48,10 @@ export const Markers = {
   remitosCircuitoList: (sql: string) => sql.includes('ve_items_remito_despacho'),
   etiquetasMaestroImportados: (sql: string) => sql.includes('vp_etiquetas_con_importados'),
 
+  // Peabody no tiene maestro de etiquetas: el producto se resuelve por EAN o DUN contra
+  // V_UD_PRODUCTO. Discrimina por CODIGOGS1, que no aparece en ninguna otra query.
+  productoPorCodigo: (sql: string) => sql.includes('CODIGOGS1'),
+
   // Avance por remito (para marcar los completos en el listado). CANTIDAD_PEDIDA es exclusivo de
   // esta query, asi que no colisiona con productosRemito ni vistaTransaccion, que tambien leen
   // V_ITEMEGRESOINVENTARIO.

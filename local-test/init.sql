@@ -41,9 +41,14 @@ INSERT INTO public.vp_aplicaciones_empleado (usuario, password) VALUES ('TEST', 
 -- NULL) en la enorme mayoria de los productos. Se mezclan los dos casos a proposito para
 -- verificar el COALESCE de PRODUCTO_N.
 -- ---------------------------------------------------------------------------
+-- CODIGOGS1 es el EAN de la unidad y CODIGO_DUN el de la caja master. Los dos son del PRODUCTO,
+-- no de la unidad fisica: se repiten en todas sus cajas. Es de aca que sale el producto al
+-- escanear en el circuito Peabody, que no tiene maestro de etiquetas.
 CREATE TABLE public.v_ud_producto (
   id             uuid PRIMARY KEY,
-  descripcionapp text
+  descripcionapp text,
+  codigogs1      text DEFAULT '',
+  codigo_dun     text DEFAULT ''
 );
 
 CREATE TABLE public.v_producto (
@@ -52,13 +57,15 @@ CREATE TABLE public.v_producto (
   descripcion     text
 );
 
-INSERT INTO public.v_ud_producto (id, descripcionapp) VALUES
-  ('00000000-0000-0000-0000-0000000000a1', ''),                  -- peabody: sin descripcion corta
-  ('00000000-0000-0000-0000-0000000000a2', ''),                  -- importado: idem
-  ('00000000-0000-0000-0000-0000000000a3', 'COCINA 4H BLANCA'),  -- cocina: si tiene
-  ('00000000-0000-0000-0000-0000000000a4', 'TERMOTANQUE 80L'),   -- termo: si tiene
-  ('00000000-0000-0000-0000-0000000000a5', ''),                  -- cocina 6h: sin descripcion corta
-  ('00000000-0000-0000-0000-0000000000a6', '');                  -- pava electrica peabody
+-- Solo los Peabody tienen EAN y DUN cargados: es un circuito nuevo y al 2026-09 hay 4 productos
+-- asi en produccion. El resto va por maestro de etiquetas y no los necesita.
+INSERT INTO public.v_ud_producto (id, descripcionapp, codigogs1, codigo_dun) VALUES
+  ('00000000-0000-0000-0000-0000000000a1', '', '7791234567890', '17791234567890'),  -- cafetera peabody
+  ('00000000-0000-0000-0000-0000000000a6', '', '7791234567891', '17791234567891'),  -- pava peabody
+  ('00000000-0000-0000-0000-0000000000a2', '', '', ''),                  -- importado
+  ('00000000-0000-0000-0000-0000000000a3', 'COCINA 4H BLANCA', '', ''),  -- cocina: si tiene desc corta
+  ('00000000-0000-0000-0000-0000000000a4', 'TERMOTANQUE 80L', '', ''),   -- termo: idem
+  ('00000000-0000-0000-0000-0000000000a5', '', '', '');                  -- cocina 6h
 
 INSERT INTO public.v_producto (id, boextension_id, descripcion) VALUES
   ('00000000-0000-0000-0000-000000000011', '00000000-0000-0000-0000-0000000000a1',
@@ -256,9 +263,8 @@ CREATE TABLE public.vp_etiquetas_con_importados (
 INSERT INTO public.vp_etiquetas_con_importados
   (numero, tipo, producto_id, producto_n, ingreso_stock, fecha_paso_lector, control_final)
 VALUES
-  -- PEABODY: un EAN por producto, repetido en todas sus unidades (no hay numero de serie).
-  (7791234567890, 'PEABODY', '00000000-0000-0000-0000-000000000011', 'CAFETERA PEABODY PE-CT4201', true, now(), NULL),
-  (7791234567891, 'PEABODY', '00000000-0000-0000-0000-000000000016', 'PAVA ELECTRICA PEABODY PE-PE5000', true, now(), NULL),
+  -- PEABODY NO esta aca: esos productos no tienen numero de serie ni maestro de etiquetas, su
+  -- EAN y DUN salen de V_UD_PRODUCTO. Tenerlos en esta vista era una suposicion equivocada.
   -- IMPORT: una etiqueta por unidad.
   (12345, 'IMPORT', '00000000-0000-0000-0000-000000000012', 'ANAFE IMPORTADO 2H', true, now(), true),
   (12346, 'IMPORT', '00000000-0000-0000-0000-000000000012', 'ANAFE IMPORTADO 2H', true, now(), true),
