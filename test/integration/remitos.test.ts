@@ -164,6 +164,59 @@ describe('GET /remitos/despacho', () => {
     expect(res.body.items[0].cantidadPedida).toBe(0);
   });
 
+  // Regresion: en produccion V_ITEMEGRESOINVENTARIO tiene al menos una fila con un
+  // CANTIDAD2_CANTIDAD que no entra en int4, y el CAST(... AS INTEGER) de esta query reventaba con
+  // "integer out of range" (22003, numeric_int4_opt_error). Como la query agrega TODA la vista sin
+  // filtrar por remito, esa unica fila devolvia 500 en el listado completo y dejaba la app
+  // inutilizable. Este test fija que el SQL ya no puede desbordar.
+  it('la query del avance no castea a INTEGER (desbordaba con los numeric fuera de rango)', async () => {
+    queryPgMock.mockImplementation(
+      makePgDispatcher([authRule(), { match: Markers.remitosDespachoList, handler: () => remitoRows }, avanceRule()]),
+    );
+
+    await request(app.server)
+      .get('/remitos/despacho')
+      .set('Authorization', basicAuthHeader('jperez', '1234'));
+
+    const sqlAvance = queryPgMock.mock.calls
+      .map(([sql]) => sql as string)
+      .find((sql) => Markers.avanceRemitos(sql));
+    expect(sqlAvance).toBeDefined();
+    expect(sqlAvance).not.toMatch(/CAST\s*\(\s*IRV\.CANTIDAD2_CANTIDAD\s+AS\s+INTEGER\s*\)/i);
+  });
+
+  // Sacado el cast, el valor absurdo ya no rompe la query pero llega hasta el service. No es una
+  // cantidad: se reporta como 0 ("sin avance conocido", no cuenta como completo en Android) en vez
+  // de mandarle un numero que no entra en su Int. El resto de los remitos no se ve afectado.
+  it('un avance fuera de rango cae a 0 y no contamina a los demas remitos', async () => {
+    queryPgMock.mockImplementation(
+      makePgDispatcher([
+        authRule(),
+        { match: Markers.remitosDespachoList, handler: () => remitoRows },
+        {
+          match: Markers.avanceRemitos,
+          handler: () => [
+            // Lo que devuelve pg para un numeric grande: string, fuera del rango de int4.
+            { remito_id: 'remito-1', cantidad_escaneada: 2, cantidad_pedida: '999999999999' },
+            { remito_id: 'remito-2', cantidad_escaneada: 1, cantidad_pedida: 3 },
+          ],
+        },
+      ]),
+    );
+
+    const res = await request(app.server)
+      .get('/remitos/despacho')
+      .set('Authorization', basicAuthHeader('jperez', '1234'));
+
+    expect(res.status).toBe(200);
+    const [uno, dos] = res.body.items;
+    expect(uno.cantidadPedida).toBe(0);
+    expect(uno.cantidadEscaneada).toBe(2);
+    // El remito sano sigue con su avance real.
+    expect(dos.cantidadEscaneada).toBe(1);
+    expect(dos.cantidadPedida).toBe(3);
+  });
+
   it('remitoN ausente en la query no rompe: exactMatch null, items completos', async () => {
     queryPgMock.mockImplementation(
       makePgDispatcher([authRule(), { match: Markers.remitosDespachoList, handler: () => remitoRows }, avanceRule()]),
