@@ -368,12 +368,27 @@ UPDATE public.aux_expedicion SET migrado = true WHERE remito_n = '0003400002832'
 -- 0003500001326   IMPORT+PEABODY       0/3      mixto entre DOS circuitos nuevos + consignacion
 -- 0003400002834   COCINA               -        DEVOLUCION: no debe salir en ningun listado
 --
--- Etiquetas utiles:
---   PEABODY  7791234567890  cafetera (remito 0004100000018)
---   PEABODY  7791234567891  pava (remito 0004100000019 y 0003500001326)
---   IMPORT   12347..12349   anafes libres para cargar
---   IMPORT   12350          CONTROL_FINAL = false: los circuitos nuevos lo permiten igual
---   IMPORT   99999          producto que no esta en ningun remito -> 422
---   COCINA   100001..100003 (100003 sin control final -> 422 en despacho)
---   TERMO    100001, 200002 (100001 colisiona con cocina: mismo numero, otro tipo)
+-- Codigos utiles:
+--
+--   PEABODY (sin serie: EAN y DUN son del producto, se repiten en todas las unidades)
+--     cafetera  EAN 7791234567890   DUN 17791234567890  -> la caja trae 3
+--     pava      EAN 7791234567891   DUN 17791234567891  -> la caja trae 2
+--     Un DUN descuenta la caja entera; si no entra en lo que falta se rechaza completo.
+--
+--   IMPORT (una etiqueta por unidad)
+--     12346, 12348, 12349  libres
+--     12345, 12347         ya usadas en el remito 0003500001325 (12347 es la huerfana)
+--     12350                CONTROL_FINAL = false: los circuitos nuevos lo permiten igual
+--     99999                producto que no esta en ningun remito -> 422
+--
+--   COCINA
+--     100002, 100035..100039  libres;  100021  cocina 6H (remito 0003400002831)
+--     100003                  CONTROL_FINAL = 0  -> 422 en despacho
+--     100004                  CONTROL_FINAL NULL -> PASA (la validacion usa === false estricto)
+--     100010, 100011, 100040  ya usadas
+--
+--   TERMOTANQUE
+--     200001, 200003  libres;  200020  remito 0003400002831
+--     100001          existe tambien como COCINA: es el caso de series que colisionan
+--                     (en produccion hay ~20287 numeros en los dos tipos)
 -- ---------------------------------------------------------------------------
