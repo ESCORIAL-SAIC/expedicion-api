@@ -1,0 +1,41 @@
+# Reverse proxy con TLS delante de la API. OPCIONAL pero recomendado.
+#
+# Por que hace falta: la API no tiene sesion ni token. Cada request lleva usuario y password
+# --en el body o en un header Basic-- y se revalidan contra la base. Sin TLS, cualquiera en la
+# red ve las credenciales de los operarios en texto plano. Ademas no hay rate limiting, asi que
+# el endpoint es bruteforce-able.
+#
+# Uso (junto con el compose principal):
+#   docker compose -f docker-compose.yml -f docker-compose.proxy.yml up -d
+#
+# Requiere certificado en ./certs:
+#   certs/fullchain.pem   certificado + cadena
+#   certs/privkey.pem     clave privada
+#
+# Con una CA interna o un certificado autofirmado, el certificado tiene que estar instalado en
+# los handheld o Android rechaza la conexion. Si el server es alcanzable desde internet,
+# conviene Let's Encrypt en vez de autofirmado.
+
+services:
+  proxy:
+    image: nginx:1.27-alpine
+    container_name: expedicion-proxy
+    restart: unless-stopped
+    ports:
+      - '443:443'
+      - '80:80'
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./certs:/etc/nginx/certs:ro
+    depends_on:
+      expedicion-api:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '5'
+
+  # La API deja de publicar puerto al host: solo se llega por el proxy.
+  expedicion-api:
+    ports: !override []

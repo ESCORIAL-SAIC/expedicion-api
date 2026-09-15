@@ -25,6 +25,27 @@ interface AvanceRow {
 }
 
 /**
+ * CANTIDAD2_CANTIDAD es numeric sin tope: en produccion hay al menos una fila con un valor que no
+ * entra en int4 y tumbaba el listado entero con "integer out of range" (22003). Las queries ya no
+ * castean a INTEGER, asi que ese valor ahora llega hasta aca en vez de romper la query.
+ *
+ * El tope es INT32_MAX y no Number.MAX_SAFE_INTEGER: el cliente declara estos campos como Int de
+ * Kotlin (ResponseDtos.kt), que es de 32 bits, asi que un valor mayor no sobrevive el viaje aunque
+ * en JS sea un entero perfectamente valido. Es ademas el mismo rango que aceptaba el CAST que
+ * estaba antes, asi que ningun dato sano cambia de valor.
+ *
+ * Fuera de ese rango no es una cantidad: se reporta como 0, que en el cliente significa "sin avance
+ * conocido" y no cuenta como completo. Preferimos perder el indicador de UN remito antes que
+ * devolver 500 para TODOS.
+ */
+const INT32_MAX = 2147483647;
+
+function cantidadSegura(valor: string | number): number {
+  const n = Number(valor);
+  return Number.isInteger(n) && n >= 0 && n <= INT32_MAX ? n : 0;
+}
+
+/**
  * Avance de todos los remitos en una sola query -- no una por remito -- indexado por remito_id.
  *
  * La granularidad es el REMITO COMPLETO, no el tipo. Seria mas fino mostrarlo por tipo (un remito
@@ -45,7 +66,11 @@ async function obtenerAvancePorRemito(esDespacho: boolean): Promise<Map<string, 
   const rows = await queryPg<AvanceRow>(
     `SELECT
        IRV.PLACEOWNER_ID AS REMITO_ID,
-       COALESCE(SUM(CAST(IRV.CANTIDAD2_CANTIDAD AS INTEGER)), 0) AS CANTIDAD_PEDIDA,
+       -- ROUND y no CAST(... AS INTEGER): el cast redondea igual pero desborda si el valor no
+       -- entra en int4, y una sola fila basura en cualquier remito historico tumbaba el listado
+       -- completo (esta query no filtra por remito: agrega toda la vista). ROUND devuelve numeric,
+       -- que no puede desbordar; el valor absurdo se neutraliza despues en cantidadSegura().
+       COALESCE(SUM(ROUND(IRV.CANTIDAD2_CANTIDAD)), 0) AS CANTIDAD_PEDIDA,
        COALESCE((
          SELECT COUNT(*)
          FROM public.AUX_EXPEDICION EXP
@@ -60,8 +85,8 @@ async function obtenerAvancePorRemito(esDespacho: boolean): Promise<Map<string, 
   const avance = new Map<string, { escaneada: number; pedida: number }>();
   for (const r of rows) {
     avance.set(r.remito_id, {
-      escaneada: Number(r.cantidad_escaneada),
-      pedida: Number(r.cantidad_pedida),
+      escaneada: cantidadSegura(r.cantidad_escaneada),
+      pedida: cantidadSegura(r.cantidad_pedida),
     });
   }
   return avance;
@@ -146,8 +171,9 @@ interface VistaTransaccionRow {
   producto_id: string | null;
   producto_n: string;
   cantidad: number;
-  cantidad_original: number;
-  cantidad_restante: number;
+  // numeric, no int: pg los entrega como string. El Number() de abajo ya los normalizaba.
+  cantidad_original: string | number;
+  cantidad_restante: string | number;
 }
 
 /**
@@ -203,7 +229,13 @@ export async function obtenerVistaTransaccion(
            -- codigo interno).
            COALESCE(NULLIF(EAPRD.DESCRIPCIONAPP, ''), PRD.DESCRIPCION) AS PRODUCTO_N,
            COUNT(EXP.*) AS CANTIDAD,
-           CAST(IRV.CANTIDAD2_CANTIDAD AS INTEGER) AS CANTIDAD_ORIGINAL
+           -- Mismo motivo que en obtenerAvancePorRemito: CAST(... AS INTEGER) desborda con los
+           -- valores fuera de rango que hay en la vista. ROUND redondea igual (al mas cercano) y
+           -- devuelve numeric, asi que CANTIDAD_ORIGINAL vale lo mismo que antes para todo dato
+           -- sano. Ojo: no se puede sacar el redondeo y devolver el numeric crudo -- un decimal
+           -- haria que cantidad !== cantidadOriginal nunca sea igual y NINGUN remito se podria
+           -- confirmar (ver confirmarDespacho / confirmarCircuito).
+           ROUND(IRV.CANTIDAD2_CANTIDAD) AS CANTIDAD_ORIGINAL
          FROM public.V_ITEMEGRESOINVENTARIO IRV
          INNER JOIN public.V_PRODUCTO PRD      ON IRV.REFERENCIATIPO_ID = PRD.ID
          INNER JOIN public.V_UD_PRODUCTO EAPRD ON PRD.BOEXTENSION_ID = EAPRD.ID

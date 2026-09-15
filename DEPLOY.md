@@ -42,25 +42,86 @@ que sigue viviendo en `ESCORIAL-RS/Expedicion` sin este código).
 - Tag manual `vX.Y.Z` pusheado a mano → build usando ese tag tal cual.
 - `workflow_dispatch` manual también disponible.
 
-## Deploy en el servidor
+## Deploy en un servidor nuevo
+
+Requisitos: Docker con el plugin `compose`, y acceso de red a Postgres ESCORIAL (5432) y
+SQL Server Etiquetas (1433). No hace falta Node ni clonar el repo entero: alcanzan
+`docker-compose.yml` y el `.env`.
+
+**1. Configuración.**
 
 ```bash
-cp .env.example .env   # completar credenciales reales de Postgres/SQL Server (no versionar)
-IMAGE_TAG=1.2.3 docker compose up -d   # o sin IMAGE_TAG para :latest
+cp .env.example .env
 ```
 
-`docker-compose.yml` nunca copia el `.env` dentro de la imagen: lo pasa por `env_file` en
-tiempo de ejecución. El healthcheck del compose y del `Dockerfile` apuntan a
-`GET /health/live` (liveness, no toca la DB). Para verificar que las bases responden,
-consultar `GET /health/ready` (200 si Postgres y SQL Server responden, 503 con detalle si
-alguno falla).
+Completar hosts y credenciales de las dos bases, y **fijar `IMAGE_TAG`**. Sin esa variable el
+compose usa `:latest`, que es el último release de `main` — no lo último mergeado. Conviene la
+versión exacta (`IMAGE_TAG=0.2.0-rc.2`) para saber qué está corriendo y para que un
+`docker compose up` de otra persona no cambie de versión sin aviso.
 
-> Nota: `docker compose config` imprime en texto plano las variables resueltas desde
-> `env_file`, incluidas las credenciales reales. Evitar correrlo en terminales
-> compartidas o con logging habilitado.
-
-## Verificar versión desplegada
+**2. Levantar.**
 
 ```bash
-curl http://<host>:3000/version
+docker compose up -d
+docker compose ps          # debe decir (healthy)
+```
+
+**3. Verificar.**
+
+```bash
+curl http://localhost:3000/version        # versión desplegada
+curl http://localhost:3000/health/ready   # 200 si las dos bases responden, 503 con detalle
+```
+
+`/health/live` (el del healthcheck) no toca la base: sirve para saber si el proceso está vivo,
+no si puede trabajar. Para eso está `/health/ready`.
+
+**4. Actualizar.**
+
+```bash
+# editar IMAGE_TAG en .env
+docker compose pull && docker compose up -d
+```
+
+### TLS y exposición a la red
+
+Por defecto el compose publica **solo en `127.0.0.1:3000`**, a propósito: la API no tiene
+sesión ni token — cada request lleva usuario y password, y se revalidan contra la base. Sin TLS
+cualquiera en la red ve las credenciales de los operarios en texto plano. Tampoco hay rate
+limiting, así que el login es bruteforce-able.
+
+Para exponerla a los handheld, levantar el proxy incluido:
+
+```bash
+mkdir -p certs                            # poner fullchain.pem y privkey.pem
+docker compose -f docker-compose.yml -f docker-compose.proxy.yml up -d
+```
+
+Eso pone nginx en 443 con redirección desde 80 y rate limiting (20 r/s por IP, ráfagas de 40),
+y la API deja de publicar puerto al host. Con certificado de CA interna o autofirmado hay que
+instalarlo en los dispositivos, o Android rechaza la conexión.
+
+Si el server está en una red cerrada y se acepta el riesgo, se puede saltear el proxy cambiando
+el puerto del compose a `'3000:3000'`.
+
+### Notas
+
+`docker-compose.yml` nunca copia el `.env` dentro de la imagen: lo pasa por `env_file` en
+tiempo de ejecución.
+
+Los logs rotan a 10 MB × 5 archivos. Sin eso crecen sin límite (cada request deja una línea) y
+terminan llenando el disco.
+
+> `docker compose config` imprime en texto plano las variables resueltas desde `env_file`,
+> incluidas las credenciales reales. Evitar correrlo en terminales compartidas o con logging
+> habilitado.
+
+### Configurar la app
+
+En el handheld: **Configuración del servidor** → URL del server. La app verifica la conexión
+contra `/health/ready` antes de guardarla, y sólo persiste si responde.
+
+```
+https://<host>/          con proxy
+http://<host>:3000/      sin proxy (red cerrada)
 ```
