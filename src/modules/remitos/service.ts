@@ -59,16 +59,25 @@ function cantidadSegura(valor: string | number): number {
  * Va aparte del listado y no como JOIN porque ese SELECT ya agrupa por TIPO y meter el staging en
  * el mismo GROUP BY multiplicaria los conteos.
  *
- * El COUNT sale de un subselect correlacionado y no de un LEFT JOIN porque un remito con varios
- * items del mismo producto duplicaria las filas de staging al cruzarse.
+ * DOS COSAS LA HACIAN COLGARSE, y las dos estan arregladas aca:
  *
- * Va acotada a los remito_id que el listado ya trajo. Sin ese filtro agregaba V_ITEMEGRESOINVENTARIO
- * ENTERA -- todos los remitos historicos, no solo los despachables -- y con el subselect corriendo
- * una vez por grupo la query no terminaba en un tiempo usable: la lupa quedaba colgada sin respuesta.
- * Antes eso no se notaba porque el CAST a INTEGER explotaba a mitad del scan y cortaba por error;
- * al sacar el cast la query paso a completarse, y ahi aparecio el costo real.
+ *   1. No filtraba por remito: agregaba V_ITEMEGRESOINVENTARIO ENTERA, todos los remitos
+ *      historicos y no solo los despachables. Ahora va acotada por ANY($2) a los remito_id que el
+ *      listado ya trajo -- igual que los otros cuatro usos de la vista en src/, que siempre
+ *      filtraron por PLACEOWNER_ID.
+ *   2. El conteo de staging salia de un SUBSELECT CORRELACIONADO, que corre una vez por cada
+ *      remito del grupo. Acotado ya no es un full scan, pero con muchos remitos despachables
+ *      sigue siendo N accesos a AUX_EXPEDICION. Ahora el staging se agrega UNA vez en un CTE y se
+ *      cruza con LEFT JOIN: una sola pasada.
  *
- * De paso el avance deja de depender de la salud de remitos que la app ni muestra.
+ * El subselect estaba ahi por una razon real --un remito con varios items del mismo producto
+ * duplicaria las filas de staging si se cruzara AUX_EXPEDICION contra los items-- pero el CTE no
+ * tiene ese problema: agrupa por REMITO_ID ANTES de cruzar, asi que trae una fila por remito y el
+ * JOIN no puede multiplicar nada. Las dos mitades de la query agregan por su cuenta y recien
+ * despues se encuentran.
+ *
+ * Nada de esto se veia mientras el CAST a INTEGER explotaba a mitad del scan: el error cortaba la
+ * query por accidente y el costo real quedaba tapado detras de un 500 rapido.
  */
 async function obtenerAvancePorRemito(
   esDespacho: boolean,
@@ -79,21 +88,30 @@ async function obtenerAvancePorRemito(
   if (remitoIds.length === 0) return avance;
 
   const rows = await queryPg<AvanceRow>(
-    `SELECT
-       IRV.PLACEOWNER_ID AS REMITO_ID,
-       -- ROUND y no CAST(... AS INTEGER): el cast redondea igual pero desborda si el valor no entra
-       -- en int4, y en produccion hay al menos una fila asi. ROUND devuelve numeric, que no puede
-       -- desbordar; el valor absurdo se neutraliza despues en cantidadSegura().
-       COALESCE(SUM(ROUND(IRV.CANTIDAD2_CANTIDAD)), 0) AS CANTIDAD_PEDIDA,
-       COALESCE((
-         SELECT COUNT(*)
-         FROM public.AUX_EXPEDICION EXP
-         WHERE EXP.REMITO_ID = IRV.PLACEOWNER_ID
-         AND   EXP.ES_DESPACHO = $1
-       ), 0) AS CANTIDAD_ESCANEADA
-     FROM public.V_ITEMEGRESOINVENTARIO IRV
-     WHERE IRV.PLACEOWNER_ID = ANY($2)
-     GROUP BY IRV.PLACEOWNER_ID`,
+    `WITH ESCANEADO AS (
+       SELECT EXP.REMITO_ID, COUNT(*) AS CANTIDAD
+       FROM public.AUX_EXPEDICION EXP
+       WHERE EXP.REMITO_ID = ANY($2)
+       AND   EXP.ES_DESPACHO = $1
+       GROUP BY EXP.REMITO_ID
+     ),
+     PEDIDO AS (
+       SELECT
+         IRV.PLACEOWNER_ID AS REMITO_ID,
+         -- ROUND y no CAST(... AS INTEGER): el cast redondea igual pero desborda si el valor no
+         -- entra en int4, y en produccion hay al menos una fila asi. ROUND devuelve numeric, que
+         -- no puede desbordar; el valor absurdo se neutraliza despues en cantidadSegura().
+         SUM(ROUND(IRV.CANTIDAD2_CANTIDAD)) AS CANTIDAD
+       FROM public.V_ITEMEGRESOINVENTARIO IRV
+       WHERE IRV.PLACEOWNER_ID = ANY($2)
+       GROUP BY IRV.PLACEOWNER_ID
+     )
+     SELECT
+       PEDIDO.REMITO_ID,
+       COALESCE(PEDIDO.CANTIDAD, 0)    AS CANTIDAD_PEDIDA,
+       COALESCE(ESCANEADO.CANTIDAD, 0) AS CANTIDAD_ESCANEADA
+     FROM PEDIDO
+     LEFT JOIN ESCANEADO ON ESCANEADO.REMITO_ID = PEDIDO.REMITO_ID`,
     [esDespacho, remitoIds],
   );
 
