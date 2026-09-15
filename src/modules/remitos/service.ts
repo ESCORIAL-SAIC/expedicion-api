@@ -61,15 +61,29 @@ function cantidadSegura(valor: string | number): number {
  *
  * El COUNT sale de un subselect correlacionado y no de un LEFT JOIN porque un remito con varios
  * items del mismo producto duplicaria las filas de staging al cruzarse.
+ *
+ * Va acotada a los remito_id que el listado ya trajo. Sin ese filtro agregaba V_ITEMEGRESOINVENTARIO
+ * ENTERA -- todos los remitos historicos, no solo los despachables -- y con el subselect corriendo
+ * una vez por grupo la query no terminaba en un tiempo usable: la lupa quedaba colgada sin respuesta.
+ * Antes eso no se notaba porque el CAST a INTEGER explotaba a mitad del scan y cortaba por error;
+ * al sacar el cast la query paso a completarse, y ahi aparecio el costo real.
+ *
+ * De paso el avance deja de depender de la salud de remitos que la app ni muestra.
  */
-async function obtenerAvancePorRemito(esDespacho: boolean): Promise<Map<string, { escaneada: number; pedida: number }>> {
+async function obtenerAvancePorRemito(
+  esDespacho: boolean,
+  remitoIds: string[],
+): Promise<Map<string, { escaneada: number; pedida: number }>> {
+  const avance = new Map<string, { escaneada: number; pedida: number }>();
+  // Sin remitos no hay nada que consultar, y ANY('{}') haria un scan al pedo.
+  if (remitoIds.length === 0) return avance;
+
   const rows = await queryPg<AvanceRow>(
     `SELECT
        IRV.PLACEOWNER_ID AS REMITO_ID,
-       -- ROUND y no CAST(... AS INTEGER): el cast redondea igual pero desborda si el valor no
-       -- entra en int4, y una sola fila basura en cualquier remito historico tumbaba el listado
-       -- completo (esta query no filtra por remito: agrega toda la vista). ROUND devuelve numeric,
-       -- que no puede desbordar; el valor absurdo se neutraliza despues en cantidadSegura().
+       -- ROUND y no CAST(... AS INTEGER): el cast redondea igual pero desborda si el valor no entra
+       -- en int4, y en produccion hay al menos una fila asi. ROUND devuelve numeric, que no puede
+       -- desbordar; el valor absurdo se neutraliza despues en cantidadSegura().
        COALESCE(SUM(ROUND(IRV.CANTIDAD2_CANTIDAD)), 0) AS CANTIDAD_PEDIDA,
        COALESCE((
          SELECT COUNT(*)
@@ -78,11 +92,11 @@ async function obtenerAvancePorRemito(esDespacho: boolean): Promise<Map<string, 
          AND   EXP.ES_DESPACHO = $1
        ), 0) AS CANTIDAD_ESCANEADA
      FROM public.V_ITEMEGRESOINVENTARIO IRV
+     WHERE IRV.PLACEOWNER_ID = ANY($2)
      GROUP BY IRV.PLACEOWNER_ID`,
-    [esDespacho],
+    [esDespacho, remitoIds],
   );
 
-  const avance = new Map<string, { escaneada: number; pedida: number }>();
   for (const r of rows) {
     avance.set(r.remito_id, {
       escaneada: cantidadSegura(r.cantidad_escaneada),
@@ -90,6 +104,12 @@ async function obtenerAvancePorRemito(esDespacho: boolean): Promise<Map<string, 
     });
   }
   return avance;
+}
+
+// Los remito_id distintos de un listado: es lo que se le pasa al avance para acotarlo. Un remito
+// mixto viene repetido (una fila por tipo) y no tiene sentido pedirlo dos veces.
+function remitoIdsUnicos(rows: { remito_id: string }[]): string[] {
+  return [...new Set(rows.map((r) => r.remito_id))];
 }
 
 /**
@@ -121,7 +141,7 @@ export async function listarRemitosDespacho(
      ORDER BY REMITO_N`,
   );
 
-  const avance = await obtenerAvancePorRemito(true);
+  const avance = await obtenerAvancePorRemito(true, remitoIdsUnicos(rows));
 
   const items: RemitoListItem[] = rows.map((r) => ({
     remitoN: r.remito_n,
@@ -150,7 +170,7 @@ export async function listarRemitosDevolucion(
      ORDER BY REMITO_N`,
   );
 
-  const avance = await obtenerAvancePorRemito(false);
+  const avance = await obtenerAvancePorRemito(false, remitoIdsUnicos(rows));
 
   const items: RemitoListItem[] = rows.map((r) => ({
     remitoN: r.remito_n,
@@ -301,7 +321,7 @@ export async function listarRemitosPorTipo(
     [tipo],
   );
 
-  const avance = await obtenerAvancePorRemito(true);
+  const avance = await obtenerAvancePorRemito(true, remitoIdsUnicos(rows));
 
   const items: RemitoListItem[] = rows.map((r) => ({
     remitoN: r.remito_n,
