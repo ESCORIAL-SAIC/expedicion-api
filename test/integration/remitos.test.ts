@@ -217,6 +217,66 @@ describe('GET /remitos/despacho', () => {
     expect(dos.cantidadPedida).toBe(3);
   });
 
+  // Regresion de performance, no de resultado. Sin el WHERE esta query agregaba
+  // V_ITEMEGRESOINVENTARIO entera (todos los remitos historicos) con un subselect correlacionado
+  // por grupo, y en produccion no terminaba: la lupa quedaba colgada sin respuesta. El bug estuvo
+  // oculto mientras el CAST a INTEGER explotaba a mitad del scan -- el error cortaba la query por
+  // accidente; al sacar el cast, el costo real aparecio.
+  it('el avance se pide SOLO para los remitos del listado, no para toda la vista', async () => {
+    queryPgMock.mockImplementation(
+      makePgDispatcher([authRule(), { match: Markers.remitosDespachoList, handler: () => remitoRows }, avanceRule()]),
+    );
+
+    await request(app.server)
+      .get('/remitos/despacho')
+      .set('Authorization', basicAuthHeader('jperez', '1234'));
+
+    const llamada = queryPgMock.mock.calls.find(([sql]) => Markers.avanceRemitos(sql as string));
+    expect(llamada).toBeDefined();
+    const [sql, params] = llamada as [string, unknown[]];
+    expect(sql).toMatch(/WHERE\s+IRV\.PLACEOWNER_ID\s*=\s*ANY\(\$2\)/i);
+    expect(params[1]).toEqual(['remito-1', 'remito-2']);
+  });
+
+  // Un remito mixto viene repetido en el listado (una fila por tipo) y no tiene sentido pedirle el
+  // avance dos veces: la granularidad del avance es el remito completo, no el tipo.
+  it('un remito mixto no se pide dos veces en el avance', async () => {
+    const mixto = [
+      { ...remitoRows[0], tipo: 'COCINA' },
+      { ...remitoRows[0], tipo: 'TERMOTANQUE' },
+    ];
+    queryPgMock.mockImplementation(
+      makePgDispatcher([authRule(), { match: Markers.remitosDespachoList, handler: () => mixto }, avanceRule()]),
+    );
+
+    await request(app.server)
+      .get('/remitos/despacho')
+      .set('Authorization', basicAuthHeader('jperez', '1234'));
+
+    const llamada = queryPgMock.mock.calls.find(([sql]) => Markers.avanceRemitos(sql as string));
+    expect((llamada as [string, unknown[]])[1][1]).toEqual(['remito-1']);
+  });
+
+  // Listado vacio: no hay nada que consultar y ANY('{}') seria un scan al pedo.
+  it('un listado vacio no dispara la query del avance', async () => {
+    queryPgMock.mockImplementation(
+      makePgDispatcher([
+        authRule(),
+        { match: Markers.remitosDespachoList, handler: () => [] },
+        avanceRule(),
+      ]),
+    );
+
+    const res = await request(app.server)
+      .get('/remitos/despacho')
+      .set('Authorization', basicAuthHeader('jperez', '1234'));
+
+    expect(res.status).toBe(200);
+    expect(res.body.items).toHaveLength(0);
+    const pidioAvance = queryPgMock.mock.calls.some(([sql]) => Markers.avanceRemitos(sql as string));
+    expect(pidioAvance).toBe(false);
+  });
+
   it('remitoN ausente en la query no rompe: exactMatch null, items completos', async () => {
     queryPgMock.mockImplementation(
       makePgDispatcher([authRule(), { match: Markers.remitosDespachoList, handler: () => remitoRows }, avanceRule()]),
