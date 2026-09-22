@@ -90,7 +90,10 @@ async function obtenerAvancePorRemito(
   const rows = await queryPg<AvanceRow>(
     `WITH ESCANEADO AS (
        SELECT EXP.REMITO_ID, COUNT(*) AS CANTIDAD
-       FROM public.AUX_EXPEDICION EXP
+       -- V_AUX_EXPEDICION_TODO y no AUX_EXPEDICION: el staging vive en dos tablas (ver
+       -- migrations/001-staging-circuitos.sql) y un remito mixto COCINA+IMPORT tiene filas en
+       -- las dos. Contar una sola daria un avance corto y el remito nunca se veria completo.
+       FROM public.V_AUX_EXPEDICION_TODO EXP
        WHERE EXP.REMITO_ID = ANY($2)
        AND   EXP.ES_DESPACHO = $1
        GROUP BY EXP.REMITO_ID
@@ -249,7 +252,10 @@ export async function obtenerVistaTransaccion(
            EXP.PRODUCTO_N,
            COUNT(EXP.*) AS CANTIDAD,
            0 AS CANTIDAD_ORIGINAL
-         FROM public.AUX_EXPEDICION EXP
+         -- Las dos mitades de este UNION leen V_AUX_EXPEDICION_TODO (las dos tablas de staging),
+         -- no AUX_EXPEDICION: un remito mixto tiene filas en ambas y el conteo las necesita
+         -- juntas, si no cantidad nunca iguala a cantidadOriginal y el remito no se confirma.
+         FROM public.V_AUX_EXPEDICION_TODO EXP
          LEFT JOIN public.V_ITEMEGRESOINVENTARIO IRV ON (IRV.ID = EXP.ITEMREMITO_ID) AND (EXP.ES_DESPACHO = $1)
          WHERE EXP.REMITO_ID = $2
          AND   EXP.ITEMREMITO_ID IS NULL
@@ -277,7 +283,7 @@ export async function obtenerVistaTransaccion(
          FROM public.V_ITEMEGRESOINVENTARIO IRV
          INNER JOIN public.V_PRODUCTO PRD      ON IRV.REFERENCIATIPO_ID = PRD.ID
          INNER JOIN public.V_UD_PRODUCTO EAPRD ON PRD.BOEXTENSION_ID = EAPRD.ID
-         LEFT JOIN public.AUX_EXPEDICION EXP   ON (IRV.ID = EXP.ITEMREMITO_ID) AND (EXP.ES_DESPACHO = $1)
+         LEFT JOIN public.V_AUX_EXPEDICION_TODO EXP ON (IRV.ID = EXP.ITEMREMITO_ID) AND (EXP.ES_DESPACHO = $1)
          WHERE IRV.PLACEOWNER_ID = $2
          GROUP BY IRV.PLACEOWNER_ID, IRV.ID, IRV.REFERENCIATIPO_ID,
                   COALESCE(NULLIF(EAPRD.DESCRIPCIONAPP, ''), PRD.DESCRIPCION), IRV.CANTIDAD2_CANTIDAD

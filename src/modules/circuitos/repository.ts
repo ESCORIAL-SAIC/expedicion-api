@@ -6,7 +6,6 @@ interface MasterLabelDbRow {
   tipo: string;
   producto_id: string;
   producto_n: string;
-  control_final: boolean | null;
 }
 
 /**
@@ -19,8 +18,30 @@ interface MasterLabelDbRow {
  * (IP publica vs interna), y la API corre del lado servidor. Por eso usa queryPg y no hace
  * falta ninguna conexion nueva.
  *
- * La lista de columnas es identica a la del maestro MSSQL (verificado dfm:480-488 vs
- * :367-375), asi que mapea al mismo MasterLabelRow.
+ * SOBRE LAS COLUMNAS (leido de pg_views contra produccion el 2026-09-16; el DDL no esta en
+ * ningun repo). La suposicion de que esta vista tenia las mismas columnas que el maestro MSSQL
+ * era incorrecta, y encadenaba tres fallas que se tapaban entre si:
+ *
+ *   1. NO existe ET.CONTROL_FINAL. La vista expone numero, producto_id, producto_c, producto_n,
+ *      tipo, ingreso_stock y fecha_paso_lector, nada mas. Pedirla daba 42703 y el circuito
+ *      IMPORT fallaba antes de comparar nada: nunca funciono, no es que dejo de andar.
+ *      No se pierde ninguna validacion: el control final es un registro de la linea propia y
+ *      estos productos no pasan por ella (validaControlFinal ya estaba en false para los dos
+ *      circuitos, asi que el dato se traia y se descartaba). Cocina y termotanque SI lo validan,
+ *      contra dbo.etiquetas_expedicion, y eso no cambia.
+ *   2. El TIPO que emite es 'IMPORTADO', no 'IMPORT' (ver tipoMaestro en config.ts).
+ *   3. `numero` NO es la serie: la vista la trunca a los ultimos 9 digitos
+ *      (`right(numero::text, 9)::integer`) y la columna es int4. Las series reales son de 18
+ *      digitos, asi que comparar contra `numero` daba 22003 (integer out of range).
+ *
+ * De ahi que se compare contra NUMERO_COMPLETO, una columna agregada al final de la vista que
+ * conserva la serie entera como texto. `numero` queda intacto para el Delphi y todo lo que ya
+ * lo lee.
+ *
+ * Por que la serie completa y no el sufijo de 9: truncar pierde unicidad. Las 10371 series
+ * activas son unicas 1 a 1, pero colapsan en 9911 sufijos -- 460 cruces. Cuando dos de esos
+ * cruces caen en productos distintos del MISMO remito (p.ej. una cocina electrica y un horno
+ * empotrable), el filtro por remito no desambigua y se despacha el producto equivocado.
  */
 export async function obtenerEtiquetasMaestroImportados(
   etiqueta: string,
@@ -28,13 +49,12 @@ export async function obtenerEtiquetasMaestroImportados(
 ): Promise<MasterLabelRow[]> {
   const rows = await queryPg<MasterLabelDbRow>(
     `SELECT
-       ET.NUMERO AS ETIQUETA,
+       ET.NUMERO_COMPLETO AS ETIQUETA,
        ET.TIPO,
        ET.PRODUCTO_ID,
-       ET.PRODUCTO_N,
-       ET.CONTROL_FINAL
+       ET.PRODUCTO_N
      FROM vp_etiquetas_con_importados ET
-     WHERE ET.NUMERO = $1
+     WHERE ET.NUMERO_COMPLETO = $1
      AND ET.TIPO = $2`,
     [etiqueta, tipo],
   );
@@ -44,7 +64,9 @@ export async function obtenerEtiquetasMaestroImportados(
     tipo: r.tipo,
     productoId: r.producto_id,
     productoN: r.producto_n,
-    controlFinal: r.control_final,
+    // La vista no expone control final. null y no false: `false` dispararia NO_FINAL_CONTROL
+    // si algun circuito futuro prendiera validaControlFinal, afirmando algo que no sabemos.
+    controlFinal: null,
   }));
 }
 

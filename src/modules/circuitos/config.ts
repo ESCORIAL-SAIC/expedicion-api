@@ -10,8 +10,22 @@
 export interface CircuitoConfig {
   /** Segmento literal de la ruta HTTP (/importado/..., /peabody/...). */
   slug: string;
-  /** Valor de TIPO en la base. Sale de aca y nunca del body del request. */
+  /**
+   * TIPO del producto en el listado de remitos (ve_productos_despacho.tipoproducfiscal).
+   * Sale de aca y nunca del body del request.
+   */
   tipo: string;
+  /**
+   * TIPO que emite el maestro de etiquetas, cuando NO coincide con el del listado.
+   *
+   * Existe porque las dos fuentes usan vocabularios distintos y nadie los unifico:
+   * `tipoproducfiscal` dice 'IMPORT' (verificado: devuelve COCINA / IMPORT / PEABODY / TERMO)
+   * mientras que vp_etiquetas_con_importados emite `'IMPORTADO'::text` literal en su rama de
+   * importados. Con un solo campo, el listado matcheaba y el maestro no devolvia nunca una fila.
+   *
+   * Sin definir, se usa `tipo`.
+   */
+  tipoMaestro?: string;
   /**
    * Paso 2: consulta el ultimo estado global de la etiqueta y rechaza si ya fue despachada.
    * Solo tiene sentido cuando la etiqueta identifica una unidad fisica unica.
@@ -47,6 +61,7 @@ export interface CircuitoConfig {
 export const CIRCUITO_IMPORTADO: CircuitoConfig = {
   slug: 'importado',
   tipo: 'IMPORT',
+  tipoMaestro: 'IMPORTADO',
   validaYaDespachada: true,
   validaDuplicado: true,
   validaControlFinal: false,
