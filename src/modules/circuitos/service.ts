@@ -12,18 +12,35 @@ import {
   insertarEnStaging,
   obtenerUltimoEstadoEtiqueta,
 } from '../escaneo/repository.js';
+import type { TablaStaging } from '../escaneo/repository.js';
 import type { MasterLabelRow, ScanResult } from '../escaneo/types.js';
 import type { CircuitoConfig } from './config.js';
 import { obtenerEtiquetasMaestroImportados, obtenerProductoPorCodigo } from './repository.js';
+
+/**
+ * Los circuitos nuevos escriben en su propia tabla de staging.
+ *
+ * `aux_expedicion.etiqueta` es integer (10 digitos) y no acepta un EAN de Peabody (13) ni una
+ * serie de importado (18). No se pudo ampliar porque la columna tiene siete vistas dependientes,
+ * una de ellas base del circuito COCINA/TERMOTANQUE: ver migrations/001-staging-circuitos.sql.
+ *
+ * Es una constante y no un campo de CircuitoConfig porque no es una decision por circuito: los
+ * dos circuitos nuevos van a la misma tabla, y cuando se pueda hacer el ALTER esta linea
+ * desaparece junto con la tabla.
+ */
+const TABLA_CIRCUITOS: TablaStaging = 'aux_expedicion_circuitos';
 
 /**
  * Resuelve el codigo escaneado contra el maestro que corresponda al circuito: la tabla de
  * etiquetas cuando cada unidad tiene su numero, o el producto por EAN/DUN cuando no.
  */
 function resolverCodigo(circuito: CircuitoConfig, codigo: string): Promise<MasterLabelRow[]> {
+  // tipoMaestro y no tipo: el maestro de importados dice 'IMPORTADO' donde el listado de
+  // remitos dice 'IMPORT'. Ver CircuitoConfig.tipoMaestro.
+  const tipo = circuito.tipoMaestro ?? circuito.tipo;
   return circuito.maestro === 'producto'
-    ? obtenerProductoPorCodigo(codigo, circuito.tipo)
-    : obtenerEtiquetasMaestroImportados(codigo, circuito.tipo);
+    ? obtenerProductoPorCodigo(codigo, tipo)
+    : obtenerEtiquetasMaestroImportados(codigo, tipo);
 }
 
 export interface EscanearCircuitoInput {
@@ -58,7 +75,11 @@ export async function escanearCircuito(
 
     // Paso 2: ultimo estado global de la etiqueta (solo si la etiqueta es unica por unidad).
     if (circuito.validaYaDespachada) {
-      const despachadaPreviamente = await obtenerUltimoEstadoEtiqueta(input.etiqueta);
+      const despachadaPreviamente = await obtenerUltimoEstadoEtiqueta(
+        input.etiqueta,
+        undefined,
+        TABLA_CIRCUITOS,
+      );
       if (despachadaPreviamente === true) {
         throw new BusinessError(409, 'LABEL_ALREADY_DISPATCHED', Messages.LABEL_ALREADY_DISPATCHED);
       }
@@ -73,7 +94,7 @@ export async function escanearCircuito(
     // Paso 4: duplicado en staging (abort silencioso). Apagado cuando el codigo se repite
     // entre unidades, o la segunda unidad del mismo producto no se podria cargar.
     if (circuito.validaDuplicado) {
-      const duplicado = await existeEtiquetaEnStaging(remitoId, input.etiqueta);
+      const duplicado = await existeEtiquetaEnStaging(remitoId, input.etiqueta, TABLA_CIRCUITOS);
       if (duplicado) {
         return { duplicated: true };
       }
@@ -134,6 +155,7 @@ export async function escanearCircuito(
         remitoId,
         itemRemitoId: ganador.itemRemitoId,
         productoId: ganador.candidato.productoId,
+        tabla: TABLA_CIRCUITOS,
       });
     }
 
@@ -181,7 +203,7 @@ export async function eliminarEtiquetaCircuito(
     throw new BusinessError(404, 'LABEL_INVALID', Messages.labelInvalido(input.etiqueta));
   }
 
-  await borrarEtiquetaMasReciente(remitoId, input.etiqueta);
+  await borrarEtiquetaMasReciente(remitoId, input.etiqueta, TABLA_CIRCUITOS);
 
   const vista = await obtenerVistaTransaccion(true, remitoId);
   return { success: true, totalEscaneado: calcularTotalEscaneado(vista) };

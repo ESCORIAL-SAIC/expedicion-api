@@ -3,6 +3,25 @@ import { queryPg } from '../../db/postgres.js';
 import { queryMssql } from '../../db/mssql.js';
 import type { MasterLabelRow } from './types.js';
 
+/**
+ * Tabla de staging sobre la que opera cada circuito.
+ *
+ * Hay dos porque `aux_expedicion.etiqueta` es integer y no se puede ampliar: tiene siete vistas
+ * dependientes, una de ellas `vp_etiquetas`, base del circuito COCINA/TERMOTANQUE que hoy
+ * funciona. El detalle esta en migrations/001-staging-circuitos.sql.
+ *
+ *   'aux_expedicion'            COCINA / TERMOTANQUE. etiqueta integer, 10 digitos.
+ *                               La que lee el Delphi y las siete vistas.
+ *   'aux_expedicion_circuitos'  IMPORT / PEABODY. etiqueta bigint: EAN de 13, DUN de 14,
+ *                               series de 18.
+ *
+ * Es un tipo cerrado y no un string libre porque el valor se interpola en el SQL -- el nombre de
+ * una tabla no puede ir como parametro. Nunca debe construirse a partir del body de un request.
+ */
+export type TablaStaging = 'aux_expedicion' | 'aux_expedicion_circuitos';
+
+const TABLA_CLASICA: TablaStaging = 'aux_expedicion';
+
 interface UltimoEstadoRow {
   etiqueta: string;
   es_despacho: boolean;
@@ -25,11 +44,12 @@ interface UltimoEstadoRow {
 export async function obtenerUltimoEstadoEtiqueta(
   etiqueta: string,
   remitoId?: string,
+  tabla: TablaStaging = TABLA_CLASICA,
 ): Promise<boolean> {
   const rows = await queryPg<UltimoEstadoRow>(
     `SELECT DISTINCT ON (etiqueta)
        etiqueta, es_despacho, remito_n, fechahora
-     FROM aux_expedicion
+     FROM ${tabla}
      WHERE etiqueta = $1
      ${remitoId ? 'AND remito_id = $2' : ''}
      ORDER BY etiqueta DESC, fechahora DESC`,
@@ -73,10 +93,14 @@ export async function obtenerEtiquetasMaestro(etiqueta: string, tipo: string): P
 }
 
 // Replica QueryExisteEtiqueta: etiqueta ya presente en staging para ese remito.
-export async function existeEtiquetaEnStaging(remitoId: string, etiqueta: string): Promise<boolean> {
+export async function existeEtiquetaEnStaging(
+  remitoId: string,
+  etiqueta: string,
+  tabla: TablaStaging = TABLA_CLASICA,
+): Promise<boolean> {
   const rows = await queryPg(
     `SELECT EXP.ETIQUETA
-     FROM public.AUX_EXPEDICION EXP
+     FROM public.${tabla} EXP
      WHERE EXP.REMITO_ID = $1
      AND   EXP.ETIQUETA = $2`,
     [remitoId, etiqueta],
@@ -92,12 +116,14 @@ interface InsertParams {
   remitoId: string;
   itemRemitoId: string | null;
   productoId: string;
+  /** Sin especificar, la tabla clasica (COCINA / TERMOTANQUE). */
+  tabla?: TablaStaging;
 }
 
 // Replica CommandInsert (id generado con crypto.randomUUID en vez del roundtrip QueryNuevoID).
 export async function insertarEnStaging(params: InsertParams): Promise<void> {
   await queryPg(
-    `INSERT INTO public.aux_expedicion(
+    `INSERT INTO public.${params.tabla ?? TABLA_CLASICA}(
        es_despacho, id, remito_n, etiqueta, producto_n, remito_id, itemremito_id, producto_id)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
     [
@@ -116,12 +142,16 @@ export async function insertarEnStaging(params: InsertParams): Promise<void> {
 // Replica CommandBorrarItem: borra el registro MAS RECIENTE de staging que matchea etiqueta+remito,
 // sin filtrar por es_despacho (replica el comportamiento funcional del bug de nombre de parametro
 // del Delphi original: el chequeo de pertenencia a es_despacho/remito actual esta deshabilitado).
-export async function borrarEtiquetaMasReciente(remitoId: string, etiqueta: string): Promise<void> {
+export async function borrarEtiquetaMasReciente(
+  remitoId: string,
+  etiqueta: string,
+  tabla: TablaStaging = TABLA_CLASICA,
+): Promise<void> {
   await queryPg(
-    `DELETE FROM AUX_EXPEDICION
+    `DELETE FROM ${tabla}
      WHERE ID IN (
        SELECT ID
-       FROM AUX_EXPEDICION
+       FROM ${tabla}
        WHERE ETIQUETA = $1
        AND REMITO_ID = $2
        ORDER BY FECHAHORA DESC
@@ -131,13 +161,26 @@ export async function borrarEtiquetaMasReciente(remitoId: string, etiqueta: stri
   );
 }
 
-// Replica CommandBorrarTransaccion: borra todo el staging de ese remito+tipo con migrado=false.
+/**
+ * Replica CommandBorrarTransaccion: borra todo el staging de ese remito con migrado = false.
+ *
+ * Borra de LAS DOS tablas, y no de la del circuito que llamo. El alcance de esta operacion
+ * siempre fue el remito completo --decision ya tomada y documentada en borrarTransaccionCircuito
+ * (circuitos/service.ts)-- y un remito mixto COCINA+IMPORT tiene filas en las dos. Borrar solo
+ * una dejaria el remito a medias, que es justo lo que el operario no espera cuando pide
+ * "borrar transaccion".
+ *
+ * No hace falta transaccion explicita: los dos DELETE son independientes y si el segundo fallara,
+ * el estado resultante (una tabla limpia y la otra no) es el mismo que ya produce hoy un error a
+ * mitad de camino. Reintentar es seguro, el DELETE es idempotente.
+ */
 export async function borrarTransaccionStaging(remitoId: string, esDespacho: boolean): Promise<void> {
-  await queryPg(
-    `DELETE FROM AUX_EXPEDICION
+  const sql = (tabla: TablaStaging) =>
+    `DELETE FROM ${tabla}
      WHERE ES_DESPACHO = $1
      AND REMITO_ID = $2
-     AND MIGRADO = false`,
-    [esDespacho, remitoId],
-  );
+     AND MIGRADO = false`;
+
+  await queryPg(sql('aux_expedicion'), [esDespacho, remitoId]);
+  await queryPg(sql('aux_expedicion_circuitos'), [esDespacho, remitoId]);
 }
