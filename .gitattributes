@@ -1,1 +1,23 @@
+# Todo el repo se guarda con LF, que es como ya esta commiteado.
+#
+# Sin esta regla Git guardaba los bytes tal cual venian del disco, asi que un clon en Windows
+# --o cualquier editor que escriba CRLF-- convertia archivos enteros en la proxima commiteada.
+# El diff pasaba a ser "todo el archivo cambio" y tapaba las lineas que realmente se tocaron.
+#
+# `text=auto` deja que Git decida que es texto y que es binario. Cada quien puede tener CRLF en
+# su working tree si su editor lo prefiere: lo que se versiona sale normalizado igual.
+* text=auto eol=lf
+
+# Los .sh ademas TIENEN que quedar en LF al extraerse, no solo al guardarse: con CRLF el shell
+# falla con "bad interpreter". Ya estaba, se conserva.
 *.sh text eol=lf
+
+# Binarios: que Git no intente normalizar nada adentro.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.jar binary
