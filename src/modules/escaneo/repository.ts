@@ -65,7 +65,29 @@ interface MasterLabelDbRow {
   TIPO: string;
   PRODUCTO_ID: string;
   PRODUCTO_N: string;
-  CONTROL_FINAL: boolean | null;
+  // int en la base (verificado en sys.columns, 2026-09-22), no bit: el driver lo entrega como
+  // number, nunca como boolean. Ver normalizarControlFinal.
+  CONTROL_FINAL: number | boolean | null;
+}
+
+/**
+ * Pasa CONTROL_FINAL a boolean.
+ *
+ * La columna es `int` en SQL Server, asi que el driver mssql devuelve 0, 1 o null -- NUNCA un
+ * boolean. El chequeo del service era `controlFinal === false`, que con un 0 da false: la
+ * validacion NO_FINAL_CONTROL no disparaba nunca y una cocina sin control final se despachaba
+ * igual. No se veia en los tests porque el dataset local declaraba la columna como `bit`, y ahi
+ * el driver si devuelve boolean.
+ *
+ * NULL se normaliza a false, o sea que RECHAZA. Es un desvio deliberado del Delphi, donde el
+ * `=== false` estricto lo dejaba pasar: la regla es que cocina y termotanque deben tener control
+ * final para despacharse, y "sin dato" no es "lo tiene". Los circuitos IMPORT y PEABODY no
+ * validan esto en absoluto (validaControlFinal en config.ts) porque esos productos no pasan por
+ * la linea propia.
+ */
+function normalizarControlFinal(valor: number | boolean | null): boolean {
+  if (typeof valor === 'boolean') return valor;
+  return valor === 1;
 }
 
 // Replica QueryEtiqueta (SQL Server, maestro de etiquetas de Suipacha).
@@ -88,7 +110,7 @@ export async function obtenerEtiquetasMaestro(etiqueta: string, tipo: string): P
     tipo: r.TIPO,
     productoId: r.PRODUCTO_ID,
     productoN: r.PRODUCTO_N,
-    controlFinal: r.CONTROL_FINAL,
+    controlFinal: normalizarControlFinal(r.CONTROL_FINAL),
   }));
 }
 

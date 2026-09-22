@@ -11,10 +11,12 @@
 -- ---------------------------------------------------------------------------
 -- Staging (tabla real en produccion, no vista)
 -- ---------------------------------------------------------------------------
+-- Tipos y largos calcados de information_schema (2026-09-22). Los varchar tienen limite y estaban
+-- como `text`: un producto_n de 250 caracteres entraba en local y en produccion daria 22001.
 CREATE TABLE public.aux_expedicion (
   id             uuid PRIMARY KEY,
   es_despacho    boolean,
-  remito_n       text,
+  remito_n       character varying(20),
   -- integer, NO bigint: es lo que hay en produccion (verificado en information_schema el
   -- 2026-09-16, junto con aux_expedicion_error.etiqueta). Tope 2147483647, o sea 10 digitos.
   --
@@ -27,12 +29,27 @@ CREATE TABLE public.aux_expedicion (
   -- Cuando se amplie en produccion (ALTER ... TYPE bigint, tambien en aux_expedicion_error),
   -- ampliar aca en el mismo commit para que los dos entornos no vuelvan a divergir.
   etiqueta       integer,
-  producto_n     text,
+  producto_n     character varying(200),
   remito_id      uuid,
   itemremito_id  uuid,
   producto_id    uuid,
-  fechahora      timestamp NOT NULL DEFAULT now(),
-  migrado        boolean NOT NULL DEFAULT false
+  -- En produccion NO son NOT NULL: son nullable con default. La app siempre los completa, pero
+  -- el NOT NULL de local escondia que una fila puede llegar con migrado NULL desde otro lado.
+  fechahora      timestamp DEFAULT now(),
+  migrado        boolean DEFAULT false,
+  -- La escribe el proceso de migracion al ERP, no la API. Faltaba en este dataset.
+  calipso_id     uuid
+);
+
+-- Donde el proceso de migracion deja lo que no pudo migrar. La API no la toca, pero vp_etiquetas
+-- la lee: su tercera rama saca de aca las etiquetas que fallaron, para que se puedan volver a
+-- consultar. Por eso una fila mal cargada aca puede aparecer como etiqueta valida.
+CREATE TABLE public.aux_expedicion_error (
+  id            uuid PRIMARY KEY,
+  etiqueta      integer,
+  fechahora     timestamp DEFAULT now(),
+  itemremito_id uuid,
+  etiquetaaux   integer
 );
 
 -- ---------------------------------------------------------------------------
@@ -150,74 +167,80 @@ INSERT INTO public.v_producto (id, boextension_id, descripcion) VALUES
 -- ---------------------------------------------------------------------------
 -- Items de remito (V_ITEMEGRESOINVENTARIO). PLACEOWNER_ID es el remito.
 -- ---------------------------------------------------------------------------
+-- Subconjunto de las ~160 columnas reales: solo las que tocan las queries de la API. Los tipos
+-- y largos SI son los de produccion (information_schema, 2026-09-22).
+--
+-- `descripcion` es la descripcion del ITEM DEL REMITO, y es la que usan las dos vistas de
+-- listado como producto_n -- no la de v_producto. Faltaba en este dataset.
 CREATE TABLE public.v_itemegresoinventario (
   id                    uuid PRIMARY KEY,
   placeowner_id         uuid,
   referenciatipo_id     uuid,
+  descripcion           character varying(150),
   cantidad2_cantidad    numeric,
-  numerodocumento       text,
-  nombredestinatariotr  text
+  numerodocumento       character varying(20),
+  nombredestinatariotr  character varying(100)
 );
 
 INSERT INTO public.v_itemegresoinventario
-  (id, placeowner_id, referenciatipo_id, cantidad2_cantidad, numerodocumento, nombredestinatariotr)
+  (id, placeowner_id, referenciatipo_id, descripcion, cantidad2_cantidad, numerodocumento, nombredestinatariotr)
 VALUES
   -- R1 (0004100000018) PEABODY vacio: 3 cafeteras, nada escaneado.
   ('00000000-0000-0000-0000-000000000101', '00000000-0000-0000-0000-000000000001',
-   '00000000-0000-0000-0000-000000000011', 3, '0004100000018', 'CASA CENTRAL PEABODY SA'),
+   '00000000-0000-0000-0000-000000000011', 'CAFETERA PEABODY PE-CT4201 1.2L', 3, '0004100000018', 'CASA CENTRAL PEABODY SA'),
 
   -- R2 (0003500001325) IMPORT a medias: 4 anafes, 2 escaneados.
   ('00000000-0000-0000-0000-000000000102', '00000000-0000-0000-0000-000000000002',
-   '00000000-0000-0000-0000-000000000012', 4, '0003500001325', 'DISTRIBUIDORA IMPORTADOS SRL'),
+   '00000000-0000-0000-0000-000000000012', 'ANAFE IMPORTADO 2 HORNALLAS 30CM', 4, '0003500001325', 'DISTRIBUIDORA IMPORTADOS SRL'),
 
   -- R3 (0003400002829) MIXTO cocina+termo, ambos a medias.
   ('00000000-0000-0000-0000-000000000103', '00000000-0000-0000-0000-000000000003',
-   '00000000-0000-0000-0000-000000000013', 2, '0003400002829', 'ELECTRO HOGAR SA'),
+   '00000000-0000-0000-0000-000000000013', 'COCINA 4 HORNALLAS BLANCA 56CM COD-4471', 2, '0003400002829', 'ELECTRO HOGAR SA'),
   ('00000000-0000-0000-0000-000000000104', '00000000-0000-0000-0000-000000000003',
-   '00000000-0000-0000-0000-000000000014', 2, '0003400002829', 'ELECTRO HOGAR SA'),
+   '00000000-0000-0000-0000-000000000014', 'TERMOTANQUE 80 LITROS ELECTRICO COD-8890', 2, '0003400002829', 'ELECTRO HOGAR SA'),
 
   -- R4 (0003400002830) COCINA completo: 2 de 2. Debe salir con check y al final.
   ('00000000-0000-0000-0000-000000000105', '00000000-0000-0000-0000-000000000004',
-   '00000000-0000-0000-0000-000000000013', 2, '0003400002830', 'CADENA BLANCA SRL'),
+   '00000000-0000-0000-0000-000000000013', 'COCINA 4 HORNALLAS BLANCA 56CM COD-4471', 2, '0003400002830', 'CADENA BLANCA SRL'),
 
   -- R5 (0004100000019) PEABODY completo: 2 de 2, mismo EAN dos veces.
   ('00000000-0000-0000-0000-000000000106', '00000000-0000-0000-0000-000000000005',
-   '00000000-0000-0000-0000-000000000016', 2, '0004100000019', 'SUCURSAL NORTE PEABODY'),
+   '00000000-0000-0000-0000-000000000016', 'PAVA ELECTRICA PEABODY PE-PE5000 1.7L', 2, '0004100000019', 'SUCURSAL NORTE PEABODY'),
 
   -- R6 (0003400002831) MIXTO cocina+termo, TODO completo. Caso de "borrar transaccion" que
   -- alcanza a los dos tipos.
   ('00000000-0000-0000-0000-000000000107', '00000000-0000-0000-0000-000000000006',
-   '00000000-0000-0000-0000-000000000015', 1, '0003400002831', 'MAYORISTA SUR SA'),
+   '00000000-0000-0000-0000-000000000015', 'COCINA 6 HORNALLAS ACERO 76CM COD-6620', 1, '0003400002831', 'MAYORISTA SUR SA'),
   ('00000000-0000-0000-0000-000000000108', '00000000-0000-0000-0000-000000000006',
-   '00000000-0000-0000-0000-000000000014', 1, '0003400002831', 'MAYORISTA SUR SA'),
+   '00000000-0000-0000-0000-000000000014', 'TERMOTANQUE 80 LITROS ELECTRICO COD-8890', 1, '0003400002831', 'MAYORISTA SUR SA'),
 
   -- R7 (0003400002832) remito de una sola unidad: se completa con un solo escaneo.
   ('00000000-0000-0000-0000-000000000109', '00000000-0000-0000-0000-000000000007',
-   '00000000-0000-0000-0000-000000000013', 1, '0003400002832', 'CLIENTE MINORISTA'),
+   '00000000-0000-0000-0000-000000000013', 'COCINA 4 HORNALLAS BLANCA 56CM COD-4471', 1, '0003400002832', 'CLIENTE MINORISTA'),
 
   -- R8 (0003400002833) remito grande: 12 cocinas, 5 escaneadas. Ejercita el contador 1..8.
   ('00000000-0000-0000-0000-000000000110', '00000000-0000-0000-0000-000000000008',
-   '00000000-0000-0000-0000-000000000013', 12, '0003400002833', 'CADENA NACIONAL SA'),
+   '00000000-0000-0000-0000-000000000013', 'COCINA 4 HORNALLAS BLANCA 56CM COD-4471', 12, '0003400002833', 'CADENA NACIONAL SA'),
 
   -- R9 (0003500001326) IMPORT + PEABODY en el mismo remito. Ojo: los dos van por circuitos
   -- distintos pero comparten remito_id, asi que borrar transaccion desde uno alcanza al otro.
   ('00000000-0000-0000-0000-000000000111', '00000000-0000-0000-0000-000000000009',
-   '00000000-0000-0000-0000-000000000012', 2, '0003500001326', 'IMPORTADORA MIXTA SA'),
+   '00000000-0000-0000-0000-000000000012', 'ANAFE IMPORTADO 2 HORNALLAS 30CM', 2, '0003500001326', 'IMPORTADORA MIXTA SA'),
   ('00000000-0000-0000-0000-000000000112', '00000000-0000-0000-0000-000000000009',
-   '00000000-0000-0000-0000-000000000011', 1, '0003500001326', 'IMPORTADORA MIXTA SA'),
+   '00000000-0000-0000-0000-000000000011', 'CAFETERA PEABODY PE-CT4201 1.2L', 1, '0003500001326', 'IMPORTADORA MIXTA SA'),
 
   -- R10 (0003400002834) remito de DEVOLUCION (permite_despacho = false).
   ('00000000-0000-0000-0000-000000000113', '00000000-0000-0000-0000-000000000010',
-   '00000000-0000-0000-0000-000000000013', 1, '0003400002834', 'DEVOLUCIONES SA'),
+   '00000000-0000-0000-0000-000000000013', 'COCINA 4 HORNALLAS BLANCA 56CM COD-4471', 1, '0003400002834', 'DEVOLUCIONES SA'),
 
   -- R11 (0003500001327) DOS productos IMPORT en el mismo remito, con series que colisionan en
   -- sus ultimos 9 digitos (...000999001). Es el caso que el filtro por remito NO puede
   -- desambiguar: los dos productos estan en el mismo remito, asi que candidatosEnRemito deja
   -- los dos y escanearCircuito se queda con el primero que tenga cupo.
   ('00000000-0000-0000-0000-000000000114', '00000000-0000-0000-0000-000000000011',
-   '00000000-0000-0000-0000-000000000012', 1, '0003500001327', 'ELECTRODOMESTICOS DEL SUR SA'),
+   '00000000-0000-0000-0000-000000000012', 'ANAFE IMPORTADO 2 HORNALLAS 30CM', 1, '0003500001327', 'ELECTRODOMESTICOS DEL SUR SA'),
   ('00000000-0000-0000-0000-000000000115', '00000000-0000-0000-0000-000000000011',
-   '00000000-0000-0000-0000-000000000017', 1, '0003500001327', 'ELECTRODOMESTICOS DEL SUR SA');
+   '00000000-0000-0000-0000-000000000017', 'HORNO EMPOTRABLE 60CM INOX', 1, '0003500001327', 'ELECTRODOMESTICOS DEL SUR SA');
 
 -- ---------------------------------------------------------------------------
 -- Listados de remitos.
@@ -285,14 +308,42 @@ VALUES
   ('00000000-0000-0000-0000-000000000011', '0003500001327', 'ELECTRODOMESTICOS DEL SUR SA', '00000000-0000-0000-0000-0000000000cb', 'TERMOTANQUE', false, true);
 
 -- Tipo de la CABECERA: un remito, un solo tipo. Solo COCINA / TERMOTANQUE.
+-- Entregas de mercaderia. Las DOS vistas de remitos joinean contra esto exigiendo fecha de HOY
+-- (ve_items_remito_despacho con CURRENT_DATE, vp_itemremito con now()), asi que un remito sin
+-- entrega del dia NO aparece en ningun listado.
+--
+-- Se siembra con to_char(CURRENT_DATE,...) y no con una fecha fija: el dataset tiene que seguir
+-- sirviendo el mes que viene. El remito de devolucion no tiene entrega, que es otra razon --
+-- ademas de permite_despacho-- por la que no sale en el listado de despacho.
+CREATE TABLE public._entrega_mercaderia (
+  id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  referencia_id  uuid,
+  fechadocumento text
+);
+
+INSERT INTO public._entrega_mercaderia (referencia_id, fechadocumento)
+SELECT remito_id, to_char(CURRENT_DATE, 'YYYYMMDD') || '120000'
+FROM public._remito_cabecera
+WHERE permite_despacho;
+
+-- La real son CUATRO ramas unidas por UNION. Tres traen permite_despacho = true (remitos activos
+-- por distintas combinaciones de flag y tipo de transaccion, todas exigiendo entrega de hoy) y la
+-- cuarta trae permite_despacho = FALSE: son los remitos CERRADOS (estado 'C') de los ultimos 60
+-- dias, que es de donde sale el listado de DEVOLUCION.
+--
+-- Aca se colapsa en dos ramas --una por valor de permite_despacho-- porque lo que el codigo
+-- necesita distinguir es eso. Lo que si se replica es el join de entrega del dia en la rama de
+-- despacho: sin el, el listado mostraria remitos que en produccion no aparecen.
+--
+-- PRODUCTO_N sale de i.descripcion, igual que en la real.
 CREATE VIEW public.vp_itemremito AS
   SELECT
-    c.permite_despacho,
+    true                 AS permite_despacho,
     c.remito_n,
     c.remito_id,
     i.id                 AS itemremito_id,
     i.referenciatipo_id  AS producto_id,
-    p.descripcion        AS producto_n,
+    i.descripcion        AS producto_n,
     i.cantidad2_cantidad AS cantidad,
     c.cliente_n,
     c.cliente_id,
@@ -300,10 +351,43 @@ CREATE VIEW public.vp_itemremito AS
     c.consignacion
   FROM public._remito_cabecera c
   JOIN public.v_itemegresoinventario i ON i.placeowner_id = c.remito_id
-  JOIN public.v_producto p             ON p.id = i.referenciatipo_id;
+  JOIN public._entrega_mercaderia em   ON em.referencia_id = c.remito_id
+                                      AND left(em.fechadocumento, 8) = to_char(CURRENT_DATE, 'YYYYMMDD')
+  WHERE c.permite_despacho
+  UNION
+  SELECT
+    false                AS permite_despacho,
+    c.remito_n,
+    c.remito_id,
+    i.id                 AS itemremito_id,
+    i.referenciatipo_id  AS producto_id,
+    i.descripcion        AS producto_n,
+    i.cantidad2_cantidad AS cantidad,
+    c.cliente_n,
+    c.cliente_id,
+    c.numerador_tipo     AS tipo,
+    false                AS consignacion
+  FROM public._remito_cabecera c
+  JOIN public.v_itemegresoinventario i ON i.placeowner_id = c.remito_id
+  WHERE NOT c.permite_despacho;
 
 -- Tipo del PRODUCTO: un remito puede tener items de varios tipos. Cubre los cuatro.
 -- consignacion va fija en false, igual que la vista real.
+-- El PRODUCTO_N sale de irv.descripcion (la del ITEM DEL REMITO), no de v_producto ni del
+-- COALESCE con descripcionapp: eso es de otra query. Verificado contra el DDL real.
+--
+-- OJO CON EL JOIN A v_itementregamercaderia: la vista real solo muestra remitos que tengan una
+-- entrega de mercaderia con fecha de HOY.
+--
+--     JOIN v_itementregamercaderia em ON rv.id = em.referencia_id
+--       AND left(em.fechadocumento, 8) = to_char(CURRENT_DATE, 'YYYYMMDD')
+--
+-- O sea que el listado de despacho esta acotado al dia: un remito sin entrega de hoy no aparece,
+-- por mas que este activo y sin despachar. Es la explicacion de por que a veces "no hay ningun
+-- remito" y no un bug.
+--
+-- Se replica con la tabla _entrega_mercaderia de abajo. Sin esto el entorno local mostraria
+-- remitos siempre, que era el comportamiento anterior y no es el real.
 CREATE VIEW public.ve_items_remito_despacho AS
   SELECT
     true                 AS permite_despacho,
@@ -311,7 +395,7 @@ CREATE VIEW public.ve_items_remito_despacho AS
     c.remito_id,
     i.id                 AS itemremito_id,
     i.referenciatipo_id  AS producto_id,
-    p.descripcion        AS producto_n,
+    i.descripcion        AS producto_n,
     i.cantidad2_cantidad AS cantidad,
     c.cliente_n,
     c.cliente_id,
@@ -319,8 +403,9 @@ CREATE VIEW public.ve_items_remito_despacho AS
     false                AS consignacion
   FROM public._remito_cabecera c
   JOIN public.v_itemegresoinventario i     ON i.placeowner_id = c.remito_id
-  JOIN public.v_producto p                 ON p.id = i.referenciatipo_id
   JOIN public.ve_productos_despacho prod   ON prod.id = i.referenciatipo_id
+  JOIN public._entrega_mercaderia em       ON em.referencia_id = c.remito_id
+                                          AND left(em.fechadocumento, 8) = to_char(CURRENT_DATE, 'YYYYMMDD')
   WHERE c.permite_despacho;
 
 -- ---------------------------------------------------------------------------
@@ -406,15 +491,60 @@ INSERT INTO public.producto (id, unidadesporbulto, codigo)
 
 -- Calcado de produccion (pg_views, 2026-09-16). La rama de vp_etiquetas cubre COCINA/TERMO y
 -- aca queda vacia: en el entorno local ese maestro vive en SQL Server (init-mssql.sql).
-CREATE TABLE public.vp_etiquetas (
+-- Maestro de COCINA / TERMOTANQUE del lado Postgres. Lo usa consultarEstadoEtiqueta
+-- (estado/service.ts), no el escaneo: ese va contra dbo.etiquetas_expedicion en SQL Server.
+--
+-- En produccion es una VISTA con tres ramas unidas por UNION, sobre dos maestros del schema web
+-- (cocinas y termotanques) mas una tercera que saca etiquetas de aux_expedicion_error. Al final
+-- filtra por aux_transferencia_bloqueados: una etiqueta bloqueada NO aparece salvo que este
+-- liberada.
+--
+-- Aca se replica con tablas base propias y la misma forma. Dos cosas que solo se ven asi:
+--
+--   - `numero` es INTEGER (10 digitos). Este maestro no tiene el problema de los importados
+--     porque las series de cocina son de 6, pero el tipo es el mismo.
+--   - El filtro de bloqueados es un LEFT JOIN con `IS NULL OR liberado`, asi que una etiqueta
+--     bloqueada y no liberada desaparece del maestro: la consulta de estado la reporta como
+--     inexistente, no como bloqueada.
+CREATE TABLE public._etiquetas_maestro_cocinas (
   numero            integer,
   producto_id       uuid,
   producto_c        text,
-  producto_n        text,
+  producto_n        character varying(50),
   tipo              text,
   ingreso_stock     boolean,
   fecha_paso_lector timestamp
 );
+
+CREATE TABLE public.aux_transferencia_bloqueados (
+  etiqueta integer,
+  tipo     character varying(50),
+  liberado boolean DEFAULT false
+);
+
+INSERT INTO public._etiquetas_maestro_cocinas
+  (numero, producto_id, producto_c, producto_n, tipo, ingreso_stock, fecha_paso_lector)
+VALUES
+  (100001, '00000000-0000-0000-0000-000000000013', '00013', 'COCINA 4H BLANCA 56CM',    'COCINA',      true, now()),
+  (100002, '00000000-0000-0000-0000-000000000013', '00013', 'COCINA 4H BLANCA 56CM',    'COCINA',      true, now()),
+  (100010, '00000000-0000-0000-0000-000000000013', '00013', 'COCINA 4H BLANCA 56CM',    'COCINA',      true, now()),
+  (100020, '00000000-0000-0000-0000-000000000015', '00015', 'COCINA 6 HORNALLAS ACERO', 'COCINA',      true, now()),
+  -- 100001 tambien como TERMOTANQUE: las series de los dos tipos colisionan.
+  (100001, '00000000-0000-0000-0000-000000000014', '00014', 'TERMOTANQUE 80L ELECTRICO', 'TERMOTANQUE', true, now()),
+  (200001, '00000000-0000-0000-0000-000000000014', '00014', 'TERMOTANQUE 80L ELECTRICO', 'TERMOTANQUE', true, now()),
+  -- Bloqueada y NO liberada: no debe salir del maestro (ver el filtro de la vista).
+  (100099, '00000000-0000-0000-0000-000000000013', '00013', 'COCINA 4H BLANCA 56CM',    'COCINA',      true, now());
+
+INSERT INTO public.aux_transferencia_bloqueados (etiqueta, tipo, liberado)
+  VALUES (100099, 'COCINA', false);
+
+CREATE VIEW public.vp_etiquetas AS
+  SELECT q.numero, q.producto_id, q.producto_c, q.producto_n, q.tipo,
+         q.ingreso_stock, q.fecha_paso_lector
+  FROM public._etiquetas_maestro_cocinas q
+  LEFT JOIN public.aux_transferencia_bloqueados bl
+    ON q.tipo = bl.tipo AND bl.etiqueta = q.numero
+  WHERE bl.etiqueta IS NULL OR bl.liberado = true;
 
 -- NUMERO_COMPLETO es la unica columna agregada respecto de produccion, y es la que resuelve el
 -- circuito IMPORT: `numero` viene truncado a 9 digitos y es int4, asi que comparar una serie de

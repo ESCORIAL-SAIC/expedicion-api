@@ -157,6 +157,148 @@ describe('POST /despacho/:remitoId/escaneo', () => {
     expect(res.body.error.message).toBe(`El código ${etiqueta} NO TIENE CONTROL FINAL.`);
   });
 
+  // ---------------------------------------------------------------------------------------
+  // CONTROL_FINAL llega como NUMBER, no como boolean.
+  //
+  // La columna es `int` en SQL Server (sys.columns, 2026-09-22) y el driver mssql la entrega
+  // como 0 / 1 / null. El chequeo era `controlFinal === false`, y `0 === false` es false en
+  // JavaScript: la validacion no disparaba nunca y una cocina sin control final se despachaba
+  // igual. Los tests de arriba no lo detectaban porque sus mocks devuelven `true`/`false`
+  // literales, que es lo que NINGUNA fila real trae.
+  //
+  // Los dos casos de abajo usan los valores que manda la base de verdad.
+  // ---------------------------------------------------------------------------------------
+  it('422 NO_FINAL_CONTROL cuando CONTROL_FINAL llega como 0 (el int que manda la base)', async () => {
+    queryPgMock.mockImplementation(
+      makePgDispatcher([
+        authRule(),
+        { match: Markers.ultimoEstadoEtiqueta, handler: () => [] },
+        { match: Markers.existeEtiqueta, handler: () => [] },
+      ]),
+    );
+    queryMssqlMock.mockImplementation(
+      makeMssqlDispatcher([
+        {
+          match: Markers.etiquetasMaestro,
+          handler: () => [{ ETIQUETA: etiqueta, TIPO: tipo, PRODUCTO_ID: productoId, PRODUCTO_N: 'Cocina X', CONTROL_FINAL: 0 }],
+        },
+      ]),
+    );
+
+    const res = await request(app.server).post(`/despacho/${remitoId}/escaneo`).send(baseBody());
+
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('NO_FINAL_CONTROL');
+  });
+
+  // Desvio deliberado del Delphi: alli el `=== false` estricto dejaba pasar el NULL. La regla es
+  // que cocina y termotanque DEBEN tener control final para despacharse, y "sin dato" no es
+  // "lo tiene".
+  it('422 NO_FINAL_CONTROL cuando CONTROL_FINAL es NULL (sin dato no es tenerlo)', async () => {
+    queryPgMock.mockImplementation(
+      makePgDispatcher([
+        authRule(),
+        { match: Markers.ultimoEstadoEtiqueta, handler: () => [] },
+        { match: Markers.existeEtiqueta, handler: () => [] },
+      ]),
+    );
+    queryMssqlMock.mockImplementation(
+      makeMssqlDispatcher([
+        {
+          match: Markers.etiquetasMaestro,
+          handler: () => [{ ETIQUETA: etiqueta, TIPO: tipo, PRODUCTO_ID: productoId, PRODUCTO_N: 'Cocina X', CONTROL_FINAL: null }],
+        },
+      ]),
+    );
+
+    const res = await request(app.server).post(`/despacho/${remitoId}/escaneo`).send(baseBody());
+
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('NO_FINAL_CONTROL');
+  });
+
+  it('CONTROL_FINAL = 1 se despacha normalmente', async () => {
+    queryPgMock.mockImplementation(
+      makePgDispatcher([
+        authRule(),
+        { match: Markers.ultimoEstadoEtiqueta, handler: () => [] },
+        { match: Markers.existeEtiqueta, handler: () => [] },
+        {
+          match: Markers.productosRemito,
+          handler: () => [{ itemremito_id: 'item-1', producto_id: productoId }],
+        },
+        {
+          match: Markers.vistaTransaccion,
+          handler: () => [
+            {
+              itemremito_id: 'item-1',
+              producto_id: productoId,
+              producto_n: 'Cocina X',
+              cantidad: 0,
+              cantidad_original: 5,
+              cantidad_restante: 5,
+            },
+          ],
+        },
+        { match: Markers.insertStaging, handler: () => [] },
+      ]),
+    );
+    queryMssqlMock.mockImplementation(
+      makeMssqlDispatcher([
+        {
+          match: Markers.etiquetasMaestro,
+          handler: () => [{ ETIQUETA: etiqueta, TIPO: tipo, PRODUCTO_ID: productoId, PRODUCTO_N: 'Cocina X', CONTROL_FINAL: 1 }],
+        },
+      ]),
+    );
+
+    const res = await request(app.server).post(`/despacho/${remitoId}/escaneo`).send(baseBody());
+
+    expect(res.status).toBe(201);
+    expect(res.body.success).toBe(true);
+  });
+
+  // La devolucion no valida control final: una unidad que ya salio vuelve como esta.
+  it('devolucion acepta CONTROL_FINAL = 0', async () => {
+    queryPgMock.mockImplementation(
+      makePgDispatcher([
+        authRule(),
+        { match: Markers.ultimoEstadoEtiqueta, handler: () => [{ es_despacho: true }] },
+        { match: Markers.existeEtiqueta, handler: () => [] },
+        {
+          match: Markers.productosRemito,
+          handler: () => [{ itemremito_id: 'item-1', producto_id: productoId }],
+        },
+        {
+          match: Markers.vistaTransaccion,
+          handler: () => [
+            {
+              itemremito_id: 'item-1',
+              producto_id: productoId,
+              producto_n: 'Cocina X',
+              cantidad: 0,
+              cantidad_original: 5,
+              cantidad_restante: 5,
+            },
+          ],
+        },
+        { match: Markers.insertStaging, handler: () => [] },
+      ]),
+    );
+    queryMssqlMock.mockImplementation(
+      makeMssqlDispatcher([
+        {
+          match: Markers.etiquetasMaestro,
+          handler: () => [{ ETIQUETA: etiqueta, TIPO: tipo, PRODUCTO_ID: productoId, PRODUCTO_N: 'Cocina X', CONTROL_FINAL: 0 }],
+        },
+      ]),
+    );
+
+    const res = await request(app.server).post(`/devolucion/${remitoId}/escaneo`).send(baseBody());
+
+    expect(res.status).toBe(201);
+  });
+
   it('422 PRODUCT_NOT_IN_REMITO si el producto no pertenece al remito', async () => {
     queryPgMock.mockImplementation(
       makePgDispatcher([

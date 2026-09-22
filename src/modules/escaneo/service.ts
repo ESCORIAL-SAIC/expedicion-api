@@ -66,7 +66,15 @@ export async function escanear(esDespacho: boolean, remitoId: string, input: Esc
     }
 
     // Paso 5: CONTROL_FINAL (solo despacho), sobre el primer candidato del maestro.
-    if (esDespacho && maestro[0].controlFinal === false) {
+    //
+    // Cocina y termotanque DEBEN tener control final para despacharse: se exige que sea true, no
+    // que "no sea false". La diferencia importa porque la columna es int en la base y llega como
+    // 0 / 1 / null; obtenerEtiquetasMaestro ya lo normaliza (normalizarControlFinal), y un NULL
+    // --sin dato-- cuenta como sin control final y rechaza.
+    //
+    // IMPORT y PEABODY no pasan por aca: tienen su propio service y validaControlFinal en false,
+    // porque esos productos no recorren la linea propia y su maestro ni siquiera expone el dato.
+    if (esDespacho && !maestro[0].controlFinal) {
       throw new BusinessError(422, 'NO_FINAL_CONTROL', Messages.noFinalControl(input.etiqueta));
     }
 
