@@ -334,22 +334,227 @@ describe('POST /importado/:remitoId/escaneo', () => {
     queryMssqlMock.mockReset();
   });
 
+  // Forma REAL de la fila que devuelve vp_etiquetas_con_importados (leida de pg_views contra
+  // produccion el 2026-09-16). Ojo con dos campos, que antes estaban mal en este mock y por eso
+  // los tests confirmaban el bug en vez de detectarlo:
+  //   - `tipo` es 'IMPORTADO', no 'IMPORT'. El del listado de remitos SI es 'IMPORT'.
+  //   - NO hay control_final: la vista no expone esa columna.
   function maestroImportRule() {
     return {
       match: Markers.etiquetasMaestroImportados,
       handler: () => [
         {
-          etiqueta: '12345',
-          tipo: 'IMPORT',
+          etiqueta: SERIE_IMPORT,
+          tipo: 'IMPORTADO',
           producto_id: productoId,
           producto_n: 'Producto Importado',
-          control_final: null,
         },
       ],
     };
   }
 
-  const bodyImport = { ...EMPLEADO_VALIDO, etiqueta: '12345', tipo: 'IMPORT', remitoN };
+  // Las series reales son de 18 digitos exactos (10371 filas, min = max = 18).
+  const SERIE_IMPORT = '100000000000012345';
+
+  const bodyImport = { ...EMPLEADO_VALIDO, etiqueta: SERIE_IMPORT, tipo: 'IMPORT', remitoN };
+
+  // ---------------------------------------------------------------------------------------
+  // Regresion: el circuito IMPORT nunca funciono contra la base real, y estos tests pasaban
+  // igual. Los mocks rutean por `includes('vp_etiquetas_con_importados')`, asi que no ven ni
+  // las columnas que pide el SELECT ni el valor de TIPO: cualquier query con ese texto
+  // matcheaba. Los tres fallos se encadenaban, cada uno tapado por el anterior:
+  //
+  //   1. 42703  la vista NO tiene columna control_final, y el SELECT la pedia.
+  //   2. 0 filas  la vista emite TIPO 'IMPORTADO' y se le pasaba 'IMPORT'.
+  //   3. 22003  `numero` esta truncado a 9 digitos y es int4; la serie es de 18.
+  //
+  // Estos tests miran el SQL y los parametros, que es lo unico que un mock puede fijar. La
+  // verificacion de que la vista realmente se comporta asi esta en local-test/init.sql, que
+  // ahora la replica con el DDL leido de produccion.
+  // ---------------------------------------------------------------------------------------
+  it('no le pide CONTROL_FINAL al maestro de importados (la vista no tiene esa columna)', async () => {
+    queryPgMock.mockImplementation(
+      makePgDispatcher([
+        authRule(),
+        { match: Markers.ultimoEstadoEtiqueta, handler: () => [] },
+        maestroImportRule(),
+        { match: Markers.existeEtiqueta, handler: () => [] },
+        productosRule(),
+        vistaRule(),
+        insertRule(),
+      ]),
+    );
+
+    await request(app.server).post(`/importado/${remitoId}/escaneo`).send(bodyImport);
+
+    const sql = queryPgMock.mock.calls
+      .map(([s]) => String(s))
+      .find((s) => Markers.etiquetasMaestroImportados(s));
+    expect(sql).toBeDefined();
+    expect(sql).not.toMatch(/CONTROL_FINAL/i);
+  });
+
+  // El TIPO del maestro ('IMPORTADO') no es el del listado de remitos ('IMPORT'). Son dos
+  // vocabularios distintos y config.ts los separa en `tipo` y `tipoMaestro`.
+  it('consulta el maestro con TIPO = IMPORTADO, no IMPORT', async () => {
+    queryPgMock.mockImplementation(
+      makePgDispatcher([
+        authRule(),
+        { match: Markers.ultimoEstadoEtiqueta, handler: () => [] },
+        maestroImportRule(),
+        { match: Markers.existeEtiqueta, handler: () => [] },
+        productosRule(),
+        vistaRule(),
+        insertRule(),
+      ]),
+    );
+
+    await request(app.server).post(`/importado/${remitoId}/escaneo`).send(bodyImport);
+
+    const llamada = queryPgMock.mock.calls.find((c) =>
+      Markers.etiquetasMaestroImportados(String(c[0])),
+    );
+    expect(llamada?.[1]).toEqual([SERIE_IMPORT, 'IMPORTADO']);
+  });
+
+  // Compara contra NUMERO_COMPLETO y no contra NUMERO: este ultimo viene truncado a los
+  // ultimos 9 digitos por la propia vista, y ademas es int4 -- una serie de 18 digitos lo
+  // desborda con 22003 antes de leer una sola fila.
+  //
+  // Truncar tampoco seria correcto aunque entrara: las 10371 series activas son unicas 1 a 1,
+  // pero sus sufijos de 9 colapsan en 9911 (460 cruces). Si dos de esos cruces caen en
+  // productos distintos del MISMO remito, el filtro por remito no desambigua y se despacha el
+  // producto equivocado.
+  it('compara la serie completa, no el NUMERO truncado a 9 digitos', async () => {
+    queryPgMock.mockImplementation(
+      makePgDispatcher([
+        authRule(),
+        { match: Markers.ultimoEstadoEtiqueta, handler: () => [] },
+        maestroImportRule(),
+        { match: Markers.existeEtiqueta, handler: () => [] },
+        productosRule(),
+        vistaRule(),
+        insertRule(),
+      ]),
+    );
+
+    await request(app.server).post(`/importado/${remitoId}/escaneo`).send(bodyImport);
+
+    const [sql, params] = queryPgMock.mock.calls.find((c) =>
+      Markers.etiquetasMaestroImportados(String(c[0])),
+    ) as [string, unknown[]];
+
+    expect(sql).toMatch(/NUMERO_COMPLETO\s*=\s*\$1/i);
+    // El WHERE no compara contra la columna truncada.
+    expect(sql).not.toMatch(/ET\.NUMERO\s*=\s*\$1/i);
+    // Y la serie viaja entera: 18 digitos, sin normalizar a 9.
+    expect(params[0]).toBe(SERIE_IMPORT);
+    expect(String(params[0])).toHaveLength(18);
+  });
+
+  // ---------------------------------------------------------------------------------------
+  // Ruteo de tablas de staging. El staging vive en DOS tablas porque aux_expedicion.etiqueta es
+  // integer y no se pudo ampliar (siete vistas dependientes, una de ellas base de
+  // COCINA/TERMOTANQUE -- ver migrations/001-staging-circuitos.sql).
+  //
+  // Escribir en la tabla equivocada no da error de tipos ni rompe ningun test existente: falla
+  // recien contra la base, con 22003, que es exactamente el bug que se esta arreglando. De ahi
+  // que estos tests miren el SQL.
+  // ---------------------------------------------------------------------------------------
+  it('escribe en aux_expedicion_circuitos y nunca en la tabla clasica', async () => {
+    queryPgMock.mockImplementation(
+      makePgDispatcher([
+        authRule(),
+        { match: Markers.ultimoEstadoEtiqueta, handler: () => [] },
+        maestroImportRule(),
+        { match: Markers.existeEtiqueta, handler: () => [] },
+        productosRule(),
+        vistaRule(),
+        insertRule(),
+      ]),
+    );
+
+    const res = await request(app.server).post(`/importado/${remitoId}/escaneo`).send(bodyImport);
+
+    expect(res.status).toBe(201);
+    const sqls = queryPgMock.mock.calls.map(([s]) => String(s));
+    expect(sqls.some((s) => Markers.insertStagingCircuitos(s))).toBe(true);
+    expect(sqls.some((s) => Markers.insertStagingClasico(s))).toBe(false);
+  });
+
+  // Las consultas por etiqueta tambien: preguntarle a la tabla clasica por una serie de 18
+  // digitos da 22003, no "no encontrada".
+  it('consulta ultimo estado y duplicado contra aux_expedicion_circuitos', async () => {
+    queryPgMock.mockImplementation(
+      makePgDispatcher([
+        authRule(),
+        { match: Markers.ultimoEstadoEtiqueta, handler: () => [] },
+        maestroImportRule(),
+        { match: Markers.existeEtiqueta, handler: () => [] },
+        productosRule(),
+        vistaRule(),
+        insertRule(),
+      ]),
+    );
+
+    await request(app.server).post(`/importado/${remitoId}/escaneo`).send(bodyImport);
+
+    const sqls = queryPgMock.mock.calls.map(([s]) => String(s));
+    for (const marker of [Markers.ultimoEstadoEtiqueta, Markers.existeEtiqueta]) {
+      const sql = sqls.find((s) => marker(s));
+      expect(sql).toBeDefined();
+      expect(sql).toMatch(/aux_expedicion_circuitos/i);
+    }
+  });
+
+  // El conteo tiene que ver LAS DOS tablas: un remito mixto COCINA+IMPORT tiene filas en cada
+  // una, y contar solo la del circuito daria un avance corto que nunca llega a completo.
+  it('cuenta el avance contra la vista unificada, no contra una sola tabla', async () => {
+    queryPgMock.mockImplementation(
+      makePgDispatcher([
+        authRule(),
+        { match: Markers.ultimoEstadoEtiqueta, handler: () => [] },
+        maestroImportRule(),
+        { match: Markers.existeEtiqueta, handler: () => [] },
+        productosRule(),
+        vistaRule(),
+        insertRule(),
+      ]),
+    );
+
+    await request(app.server).post(`/importado/${remitoId}/escaneo`).send(bodyImport);
+
+    const sql = queryPgMock.mock.calls.map(([s]) => String(s)).find((s) => Markers.vistaTransaccion(s));
+    expect(sql).toBeDefined();
+
+    // Las clausulas, no el texto suelto: los comentarios de esta query MENCIONAN la vista, asi
+    // que un /V_AUX_EXPEDICION_TODO/ a secas pasa incluso con el FROM apuntando a la tabla vieja.
+    const sinComentarios = (sql as string).replace(/--[^\n]*/g, '');
+    expect(sinComentarios).toMatch(/FROM\s+public\.V_AUX_EXPEDICION_TODO/i);
+    expect(sinComentarios).toMatch(/JOIN\s+public\.V_AUX_EXPEDICION_TODO/i);
+    expect(sinComentarios).not.toMatch(/(FROM|JOIN)\s+public\.AUX_EXPEDICION\b/i);
+  });
+
+  // Borrar transaccion alcanza al remito completo, no al circuito que la pidio: si un remito
+  // mixto quedara con las filas de cocina intactas, el operario veria un remito "vaciado" que
+  // sigue teniendo lecturas.
+  it('borrar transaccion limpia las dos tablas de staging', async () => {
+    queryPgMock.mockImplementation(
+      makePgDispatcher([authRule(), { match: Markers.borrarTransaccion, handler: () => [] }]),
+    );
+
+    const res = await request(app.server)
+      .delete(`/importado/${remitoId}/transaccion`)
+      .send(EMPLEADO_VALIDO);
+
+    expect(res.status).toBe(200);
+    const borrados = queryPgMock.mock.calls
+      .map(([s]) => String(s))
+      .filter((s) => Markers.borrarTransaccion(s));
+    expect(borrados).toHaveLength(2);
+    expect(borrados.some((s) => Markers.borrarTransaccionCircuitos(s))).toBe(true);
+    expect(borrados.some((s) => !Markers.borrarTransaccionCircuitos(s))).toBe(true);
+  });
 
   // IMPORT arranca conservador: mantiene las validaciones de unicidad hasta confirmar si sus
   // etiquetas son unicas por unidad. Si se confirma que se repiten, se apagan los flags en
@@ -374,7 +579,7 @@ describe('POST /importado/:remitoId/escaneo', () => {
         authRule(),
         { match: Markers.ultimoEstadoEtiqueta, handler: () => [] },
         maestroImportRule(),
-        { match: Markers.existeEtiqueta, handler: () => [{ etiqueta: '12345' }] },
+        { match: Markers.existeEtiqueta, handler: () => [{ etiqueta: SERIE_IMPORT }] },
       ]),
     );
 

@@ -29,9 +29,22 @@ export const Markers = {
     sql.includes('REFERENCIATIPO_ID AS PRODUCTO_ID') && !sql.includes('CANTIDAD_RESTANTE'),
   ultimoEstadoEtiqueta: (sql: string) => sql.includes('DISTINCT ON (etiqueta)'),
   existeEtiqueta: (sql: string) => sql.includes('EXP.ETIQUETA = $2'),
+  // Cualquiera de las dos tablas de staging. Ojo: 'public.aux_expedicion' es PREFIJO de
+  // 'public.aux_expedicion_circuitos', asi que este marker matchea los dos inserts -- es lo que
+  // se quiere para las reglas del dispatcher, pero NO sirve para afirmar en que tabla se
+  // escribio. Para eso estan insertStagingClasico / insertStagingCircuitos.
   insertStaging: (sql: string) => sql.includes('INSERT INTO public.aux_expedicion'),
+  insertStagingCircuitos: (sql: string) =>
+    sql.includes('INSERT INTO public.aux_expedicion_circuitos'),
+  insertStagingClasico: (sql: string) =>
+    sql.includes('INSERT INTO public.aux_expedicion(') ||
+    sql.includes('INSERT INTO public.aux_expedicion\n'),
   borrarItem: (sql: string) => sql.includes('WHERE ID IN ('),
+  // borrarTransaccionStaging dispara DOS deletes, uno por tabla: el alcance es el remito
+  // completo y un remito mixto tiene filas en las dos.
   borrarTransaccion: (sql: string) => sql.includes('MIGRADO = false'),
+  borrarTransaccionCircuitos: (sql: string) =>
+    sql.includes('MIGRADO = false') && sql.includes('aux_expedicion_circuitos'),
   estadoInfo: (sql: string) => sql.includes('VP_ETIQUETAS ET'),
   etiquetasMaestro: (sql: string) => sql.includes('dbo.etiquetas_expedicion'),
 
